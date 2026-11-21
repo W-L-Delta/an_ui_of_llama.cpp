@@ -234,6 +234,81 @@ namespace LlamaChat
             ApplyColors(hwnd, null, null, null);
         }
     }
+    // 窗口尺寸/位置的持久化（主窗口和控制台各存一份）
+    internal static class WindowMemory
+    {
+        private static string FileFor(string name)
+        {
+            return Path.Combine(Program.StateDir, name + ".txt");
+        }
+
+        public static void Restore(Form f, string name, bool defaultMaximized)
+        {
+            bool applied = false;
+            try
+            {
+                string file = FileFor(name);
+                if (File.Exists(file))
+                {
+                    string[] p = File.ReadAllText(file).Split(',');
+                    int w, h, x, y, state = 0;
+                    if (p.Length >= 4 && int.TryParse(p[0], out w) && int.TryParse(p[1], out h)
+                        && int.TryParse(p[2], out x) && int.TryParse(p[3], out y))
+                    {
+                        if (p.Length > 4) int.TryParse(p[4], out state);
+                        if (state == 2)
+                        {
+                            f.WindowState = FormWindowState.Maximized;
+                            applied = true;
+                        }
+                        else if (w > 0 && h > 0)
+                        {
+                            Rectangle wa = Screen.FromPoint(new Point(x, y)).WorkingArea;
+                            var rect = new Rectangle(x, y, Math.Min(w, wa.Width), Math.Min(h, wa.Height));
+                            bool visible = false;
+                            foreach (Screen sc in Screen.AllScreens)
+                            {
+                                if (sc.WorkingArea.IntersectsWith(rect)) { visible = true; break; }
+                            }
+                            if (visible)
+                            {
+                                f.StartPosition = FormStartPosition.Manual;
+                                f.Bounds = rect;
+                                applied = true;
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+            // 没有记录（首次运行）才用默认布局
+            if (!applied && defaultMaximized) f.WindowState = FormWindowState.Maximized;
+        }
+
+        public static void Save(Form f, string name)
+        {
+            try
+            {
+                Rectangle r = f.WindowState == FormWindowState.Normal ? f.Bounds : f.RestoreBounds;
+                if (r.Width <= 0 || r.Height <= 0) return;
+                File.WriteAllText(FileFor(name), string.Format("{0},{1},{2},{3},{4}",
+                    r.Width, r.Height, r.Left, r.Top, (int)f.WindowState));
+            }
+            catch { }
+        }
+
+        // 关闭时保存；拖动/缩放停手 0.7 秒后也存一次（防止异常退出丢尺寸）
+        public static void Track(Form f, string name)
+        {
+            var timer = new System.Windows.Forms.Timer { Interval = 700 };
+            timer.Tick += delegate { timer.Stop(); Save(f, name); };
+            f.Resize += delegate { timer.Stop(); timer.Start(); };
+            f.Move += delegate { timer.Stop(); timer.Start(); };
+            f.FormClosing += delegate { timer.Stop(); Save(f, name); };
+        }
+    }
+
+
     internal sealed class MainForm : Form
     {
         private readonly WebView2 view;
@@ -266,10 +341,10 @@ namespace LlamaChat
             Controls.Add(menu);
             MainMenuStrip = menu;
 
-            LoadWindowBounds();
+            WindowMemory.Restore(this, "window", false);
             HandleCreated += delegate { Dwm.ApplyDark(Handle); };
             Load += async (s, e) => await BootAsync();
-            FormClosing += delegate { SaveBounds(); };
+            WindowMemory.Track(this, "window");
         }
 
         private async System.Threading.Tasks.Task BootAsync()
@@ -390,47 +465,6 @@ namespace LlamaChat
             panelTimer.Start();
         }
 
-        private void LoadWindowBounds()
-        {
-            try
-            {
-                string file = Path.Combine(Program.StateDir, "window.txt");
-                if (!File.Exists(file)) return;
-                string[] parts = File.ReadAllText(file).Split(',');
-                if (parts.Length < 4) return;
-                int w, h, x, y, state = 0;
-                if (!int.TryParse(parts[0], out w) || !int.TryParse(parts[1], out h)) return;
-                if (!int.TryParse(parts[2], out x) || !int.TryParse(parts[3], out y)) return;
-                if (parts.Length > 4) int.TryParse(parts[4], out state);
-
-                // 保存的是"还原尺寸"；窗口原先最大化就还原成最大化
-                if (state == 2) { WindowState = FormWindowState.Maximized; return; }
-
-                Rectangle wa = Screen.FromPoint(new Point(x, y)).WorkingArea;
-                var rect = new Rectangle(x, y, Math.Min(w, wa.Width), Math.Min(h, wa.Height));
-                bool visible = false;
-                foreach (Screen sc in Screen.AllScreens)
-                {
-                    if (sc.WorkingArea.IntersectsWith(rect)) { visible = true; break; }
-                }
-                if (!visible) return;
-                StartPosition = FormStartPosition.Manual;
-                Bounds = rect;
-            }
-            catch { }
-        }
-
-        private void SaveBounds()
-        {
-            try
-            {
-                Rectangle r = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
-                File.WriteAllText(Path.Combine(Program.StateDir, "window.txt"),
-                    string.Format("{0},{1},{2},{3},{4}",
-                        r.Width, r.Height, r.Left, r.Top, (int)WindowState));
-            }
-            catch { }
-        }
     }
 
 
@@ -445,7 +479,8 @@ namespace LlamaChat
             StartPosition = FormStartPosition.CenterScreen;
             Size = new Size(1280, 860);
             MinimumSize = new Size(900, 600);
-            WindowState = FormWindowState.Maximized;   // 面板信息密度高，默认铺满
+            WindowMemory.Restore(this, "console", true);   // 首次铺满，之后按上次的尺寸
+            WindowMemory.Track(this, "console");
             BackColor = Color.FromArgb(11, 14, 20);
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
             HandleCreated += delegate { Dwm.ApplyDark(Handle); };
