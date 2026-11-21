@@ -1,0 +1,30 @@
+# 模型权重（体积大，自己放）
+models/*.gguf
+models/*.webp
+models/**/*.gguf
+
+# llama.cpp 二进制与运行库
+bin/*
+!bin/README.md
+
+# 运行期数据（聊天记录、备份、日志、缓存）
+panel/data/
+panel/backups/
+panel/__pycache__/
+panel/*.log
+logs/
+*.log
+
+# 构建产物（外壳 exe / 依赖 DLL / 皮肤大图）
+chat-app/*.exe
+chat-app/*.dll
+chat-app/screenshot*.png
+web/skins/*/bg.jpg
+web/skins/*/bg.webp
+
+# 其它
+.vs/
+.idea/
+*.user
+*.tmp
+Thumbs.db
