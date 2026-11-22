@@ -658,6 +658,11 @@ def web_cfg(values: dict) -> dict:
         "max_chars": as_int(cfg_get(values, "web", "max_chars", "8000"), 8000),
         "timeout": as_int(cfg_get(values, "web", "timeout", "15"), 15),
         "block_private": cfg_get(values, "web", "block_private", "true").strip().lower() in ("true", "1", "yes", "on"),
+        "render": (cfg_get(values, "web", "render", "auto").strip().lower() or "auto"),
+        "render_timeout": as_int(cfg_get(values, "web", "render_timeout", "45"), 45),
+        "render_max_kb": as_int(cfg_get(values, "web", "render_max_kb", "4096"), 4096),
+        "site_api": cfg_get(values, "web", "site_api", "true").strip().lower() in ("true", "1", "yes", "on"),
+        "search_fallback": cfg_get(values, "web", "search_fallback", "true").strip().lower() in ("true", "1", "yes", "on"),
     }
 
 
@@ -779,6 +784,7 @@ def build_state() -> dict:
         "root": str(ROOT),
         "conf": str(CONF),
         "chat": chat_cfg(values),
+        "web": web_cfg(values),
         "router": cfg_get(values, "router", "enabled", "false").lower() == "true",
         "server": {
             "host": cfg_get(values, "server", "host", "127.0.0.1"),
@@ -1131,9 +1137,13 @@ class Handler(BaseHTTPRequestHandler):
                 updates = {"web": {}}
                 if "enabled" in payload:
                     updates["web"]["enabled"] = "true" if payload.get("enabled") else "false"
-                for key in ("engine", "max_results", "max_chars", "timeout", "block_private"):
+                for key in ("engine", "max_results", "max_chars", "timeout", "block_private",
+                            "render", "render_timeout", "render_max_kb", "site_api", "search_fallback"):
                     if key in payload:
-                        updates["web"][key] = str(payload[key])
+                        val = payload[key]
+                        if key in ("block_private", "site_api", "search_fallback"):
+                            val = "true" if val else "false"
+                        updates["web"][key] = str(val)
                 if updates["web"]:
                     update_conf(updates)
                 local_tools.set_web_config(web_cfg(parse_conf()))

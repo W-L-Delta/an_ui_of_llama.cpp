@@ -392,6 +392,25 @@
           <label class="switch"><input type="checkbox" id="webEnabled"><span class="track"></span><span class="lbl" id="webLbl">关闭</span></label>
           <span class="hint" id="webHint">—</span>
         </div>
+        <div style="grid-column:2/-1;display:grid;gap:8px;margin-top:2px">
+          <div class="ctl">
+            <span class="hint" style="min-width:56px">渲染</span>
+            <select id="webRender" style="width:172px">
+              <option value="off">关闭（最快）</option>
+              <option value="auto">自动（抓不到才渲染）</option>
+              <option value="always">总是渲染（最慢）</option>
+            </select>
+            <span class="hint">直连 403 或正文太短时用 Edge 无头渲染</span>
+          </div>
+          <div class="ctl">
+            <label class="switch"><input type="checkbox" id="webSiteApi"><span class="track"></span><span class="lbl" id="webSiteApiLbl">站点接口</span></label>
+            <span class="hint">B 站 / GitHub / 知乎走官方接口，比抓页面稳</span>
+          </div>
+          <div class="ctl">
+            <label class="switch"><input type="checkbox" id="webFallbackSearch"><span class="track"></span><span class="lbl" id="webFallbackSearchLbl">搜索兜底</span></label>
+            <span class="hint">前面都失败时用搜索摘要顶上（会标注不完整）</span>
+          </div>
+        </div>
       </div>
 
       <div class="field">
@@ -665,6 +684,11 @@
 
     const web = d.web || {};
     $("#webEnabled").checked = !!web.enabled;
+    $("#webRender").value = web.render || "auto";
+    $("#webSiteApi").checked = !!web.site_api;
+    $("#webSiteApiLbl").textContent = web.site_api ? "站点接口" : "站点接口关";
+    $("#webFallbackSearch").checked = !!web.search_fallback;
+    $("#webFallbackSearchLbl").textContent = web.search_fallback ? "搜索兜底" : "搜索兜底关";
     $("#webLbl").textContent = web.enabled ? "开启" : "关闭";
     $("#webHint").textContent = web.enabled
       ? "搜索 " + (web.engine || "bing") + " · 单页 " + (web.max_chars || 8000) + " 字符 · 内网访问已拦截"
@@ -732,6 +756,32 @@
   $("#sumOn").addEventListener("change", (e) => saveChatCfg({ summarize: e.target.checked }));
   $("#sumThreshold").addEventListener("change", (e) => saveChatCfg({ sum_threshold: (Number(e.target.value) || 50) / 100 }));
   $("#sumKeep").addEventListener("change", (e) => saveChatCfg({ sum_keep: Number(e.target.value) || 4 }));
+
+  async function saveWeb(patch, revertEl) {
+    try {
+      const r = await fetch("/api/web/config", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+      state.data.web = j;
+      $("#webSiteApiLbl").textContent = j.site_api ? "站点接口" : "站点接口关";
+      $("#webFallbackSearchLbl").textContent = j.search_fallback ? "搜索兜底" : "搜索兜底关";
+      $("#webRender").value = j.render || "auto";
+    } catch (err) {
+      alert("保存失败：" + err.message);
+      if (revertEl) revertEl();
+    }
+  }
+  $("#webRender").addEventListener("change", (e) => saveWeb({ render: e.target.value }));
+  $("#webSiteApi").addEventListener("change", (e) => {
+    const on = e.target.checked;
+    saveWeb({ site_api: on }, () => { e.target.checked = !on; });
+  });
+  $("#webFallbackSearch").addEventListener("change", (e) => {
+    const on = e.target.checked;
+    saveWeb({ search_fallback: on }, () => { e.target.checked = !on; });
+  });
 
   $("#webEnabled").addEventListener("change", async (e) => {
     const on = e.target.checked;

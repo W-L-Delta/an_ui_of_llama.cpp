@@ -13,10 +13,13 @@ from __future__ import annotations
 import fnmatch
 import html as html_mod
 import ipaddress
+import json
 import os
 import re
 import socket
+import shutil
 import subprocess
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -125,7 +128,7 @@ TOOLS = [
         "level": "read",
         "approval": False,
         "web": True,
-        "desc": "联网搜索（Bing），返回若干条标题+链接+摘要。中文查询请用空格分隔关键词、去掉年份和口语词，例如「北京 天气」；长句或不加空格容易搜不到",
+        "desc": "联网搜索（Bing），返回若干条标题+链接+摘要。中文查询请用空格分隔关键词、去掉年份和口语词，例如「黄仁勋 辞职」；长句或不加空格容易搜不到",
         "params": {
             "type": "object",
             "properties": {
@@ -174,6 +177,11 @@ WEB = {
     "max_chars": 8000,
     "timeout": 15,
     "block_private": True,
+    "render": "auto",          # 浏览器渲染：off / auto（直连失败才渲染）/ always
+    "render_timeout": 45,
+    "render_max_kb": 4096,
+    "site_api": True,          # 优先走站点接口（B 站 / GitHub / 知乎）
+    "search_fallback": True,   # 抓不到时退回搜索摘要
 }
 
 
@@ -568,6 +576,7 @@ def _http_get(url: str) -> tuple[str, str, str]:
             "User-Agent": UA,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Accept-Encoding": "identity",
         })
         opener = urllib.request.build_opener(_NoRedirect())
         try:
@@ -579,7 +588,14 @@ def _http_get(url: str) -> tuple[str, str, str]:
                     raise ValueError(f"HTTP {exc.code} 但缺少 Location")
                 cur = safe_url(urllib.parse.urljoin(cur, loc))
                 continue
-            raise ValueError(f"HTTP {exc.code}：{cur}")
+            err_body = ""
+            try:
+                err_body = _decode(exc.read(MAX_BYTES), None)
+            except Exception:
+                pass
+            err = ValueError(f"HTTP {exc.code}：{cur}")
+            err.body = err_body
+            raise err
         raw = resp.read(MAX_BYTES)
         ctype = resp.headers.get("Content-Type", "")
         final = resp.geturl() or cur
@@ -728,7 +744,7 @@ def _variants(q: str) -> list[str]:
     if v2 and v2 not in out:
         out.append(v2)
 
-    # 3) 长中文串：取「头 3 字 + 尾 3 字」，例如 北京大学计算机系 -> 北京大学 计算机系
+    # 3) 长中文串：取「头 3 字 + 尾 3 字」，例如 黄仁勋离职英伟达 -> 黄仁勋 英伟达
     src = v2 or q
     made = []
     for run in re.findall(r"[\u4e00-\u9fff]{5,}", src):
@@ -954,16 +970,250 @@ def web_search(query: str, count: int = 5) -> str:
     return text
 
 
-def web_fetch(url: str) -> str:
-    final, ctype, body = _http_get(url)
-    limit = int(WEB.get("max_chars", 8000))
+# --------------------------------------------------------------------------
+# 浏览器渲染 / 站点接口 / 搜索兜底
+# --------------------------------------------------------------------------
+_EDGE_PATHS = (
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+)
+_EDGE_CACHE: list = []
+
+
+def find_edge() -> str:
+    """找系统里的 Edge（注册表 App Paths 优先，其次常见安装路径）。"""
+    if _EDGE_CACHE:
+        return _EDGE_CACHE[0]
+    cand = []
+    try:
+        import winreg
+
+        for hive, key in (
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe"),
+            (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe"),
+        ):
+            try:
+                with winreg.OpenKey(hive, key) as k:
+                    cand.append(winreg.QueryValue(k, None))
+            except OSError:
+                pass
+    except Exception:
+        pass
+    cand.extend(_EDGE_PATHS)
+    for c in cand:
+        if c and os.path.isfile(c):
+            _EDGE_CACHE.append(c)
+            return c
+    _EDGE_CACHE.append("")
+    return ""
+
+
+def render_html(url: str) -> str:
+    """用 Edge 无头模式渲染页面，返回渲染后的 DOM。失败返回空串。"""
+    edge = find_edge()
+    if not edge:
+        return ""
+    limit_kb = int(WEB.get("render_max_kb", 4096))
+    timeout = float(WEB.get("render_timeout", 45))
+    tmp = tempfile.mkdtemp(prefix="llama-render-")
+    try:
+        proc = subprocess.run(
+            [edge, "--headless=new", "--disable-gpu", "--no-first-run",
+             f"--user-data-dir={tmp}", "--virtual-time-budget=8000",
+             "--dump-dom", url],
+            capture_output=True, timeout=timeout,
+        )
+        html = proc.stdout.decode("utf-8", errors="replace")
+        if len(html) > limit_kb * 1024:
+            html = html[: limit_kb * 1024]
+        return html
+    except Exception:
+        return ""
+    finally:
+        try:
+            shutil.rmtree(tmp, ignore_errors=True)
+        except Exception:
+            pass
+
+
+_BLOCK_PATTERNS = (
+    "存在异常", "访问受限", "限制本次访问", "请输入验证码", "安全验证",
+    "请登录后", "登录后查看", "captcha", "Access Denied", "403 Forbidden",
+)
+
+
+def looks_blocked(text: str) -> bool:
+    """渲染出来的东西是不是登录墙 / 风控页。"""
+    t = (text or "")[:1500]
+    low = t.lower()
+    return any(pat.lower() in low for pat in _BLOCK_PATTERNS)
+
+
+def looks_binary(text: str) -> bool:
+    if not text:
+        return True
+    sample = text[:2000]
+    bad = sum(1 for ch in sample if ch == "\x00" or (ord(ch) < 9 and ch not in "\r\n\t"))
+    return bad > 5 or ("\x00" in sample)
+
+
+def _api_text(obj: dict, keys: tuple) -> str:
+    out = []
+    for k in keys:
+        v = obj.get(k)
+        if isinstance(v, str) and v.strip():
+            out.append(f"{k}: {v.strip()}")
+    return "\n".join(out)
+
+
+_SITE_APIS = (
+    # B 站：公开接口，无需登录
+    (re.compile(r"https?://(?:www\.)?bilibili\.com/video/(BV[0-9A-Za-z]+)"),
+     lambda m: f"https://api.bilibili.com/x/web-interface/view?bvid={m.group(1)}"),
+    # GitHub 仓库页
+    (re.compile(r"https?://(?:www\.)?github\.com/([^/]+)/([^/?#]+)/?$"),
+     lambda m: f"https://api.github.com/repos/{m.group(1)}/{m.group(2)}"),
+    # 知乎问题（需要登录态才返回数据）
+    (re.compile(r"https?://(?:www\.)?zhihu\.com/question/(\d+)"),
+     lambda m: f"https://www.zhihu.com/api/v4/questions/{m.group(1)}"),
+    # 知乎回答
+    (re.compile(r"https?://(?:www\.)?zhihu\.com/answer/(\d+)"),
+     lambda m: f"https://www.zhihu.com/api/v4/answers/{m.group(1)}"),
+)
+
+
+def site_api_fetch(url: str) -> str:
+    """命中站点接口就用接口数据，返回可读文本；没命中/失败返回空串。"""
+    for pattern, build in _SITE_APIS:
+        m = pattern.search(url)
+        if not m:
+            continue
+        api = build(m)
+        try:
+            _, _, body = _http_get(api)
+            data = json.loads(body)
+        except Exception:
+            return ""
+        d = data.get("data") if isinstance(data, dict) else None
+        if isinstance(d, dict):
+            text = _api_text(d, ("title", "desc", "name", "fullname", "description",
+                                 "content", "view", "like", "answer_count", "follower_count"))
+            if not text and d.get("content"):
+                text = str(d.get("content"))[:4000]
+            if text:
+                return f"站点接口：{api}\n" + "-" * 40 + "\n" + text
+        if isinstance(data, dict):
+            # GitHub 仓库 / 通用对象
+            text = _api_text(data, ("full_name", "name", "title", "description",
+                                    "language", "stargazers_count", "forks_count", "open_issues_count",
+                                    "html_url", "homepage", "updated_at"))
+            if text:
+                return f"站点接口：{api}\n" + "-" * 40 + "\n" + text
+    return ""
+
+
+def _title_of(markup: str) -> str:
+    m = re.search(r"<title[^>]*>(.*?)</title>", markup or "", re.I | re.S)
+    if not m:
+        return ""
+    return html_mod.unescape(re.sub(r"\s+", " ", m.group(1))).strip()
+
+
+def search_snippets(url: str, want: int = 3, hint: str = "") -> str:
+    """抓不到页面时，用搜索摘要兜底。"""
+    if not WEB.get("enabled"):
+        return ""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        host = parsed.netloc.replace("www.", "")
+        slug = parsed.path.strip("/").replace("/", " ").replace("-", " ").replace("_", " ")
+        query = (hint or f"{host} {slug}").strip()[:80] or host
+        rows, engine = _fetch_pool(query, max(1, int(WEB.get("scan_pages", 3))), None)
+        if not rows:
+            return ""
+        picked = _filter_rows(query, rows)[:want] or rows[:want]
+        lines = [f"（原页面抓取失败，以下是搜索摘要，可能不完整）引擎：{engine}"]
+        for row in picked:
+            title, link = row[0], row[1]
+            snip = row[2] if len(row) > 2 else ""
+            lines.append(f"- {title}\n  {link}\n  {snip[:160]}")
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
+def _html_to_text(ctype: str, body: str) -> str:
     low = (ctype or "").lower()
     if "html" in low or "<html" in body[:2000].lower():
-        text = extract_main_text(body)
-    else:
-        text = body
-    text = text.strip()
-    if len(text) > limit:
-        text = text[:limit] + f"\n…（已截断，原文共 {len(text)} 字符）"
-    header = f"抓取：{final}\n类型：{ctype or '未知'}\n" + "-" * 40 + "\n"
-    return header + (text or "（没有提取到正文）")
+        return extract_main_text(body)
+    return body
+
+
+def web_fetch(url: str) -> str:
+    """抓页面：站点接口 → 直连 → 浏览器渲染 → 搜索摘要兜底。"""
+    limit = int(WEB.get("max_chars", 8000))
+    mode = str(WEB.get("render", "auto") or "auto").lower()
+    tried = []
+
+    def finish(final: str, ctype: str, text: str, how: str) -> str:
+        text = (text or "").strip()
+        if len(text) > limit:
+            text = text[:limit] + f"\n…（已截断，原文共 {len(text)} 字符）"
+        header = f"抓取：{final}\n方式：{how}\n类型：{ctype or '未知'}\n" + "-" * 40 + "\n"
+        return header + (text or "（没有提取到正文）")
+
+    # 0) 站点接口（最省事最稳，命中就直接用）
+    if WEB.get("site_api", True):
+        api = site_api_fetch(url)
+        if api.strip():
+            return finish(url, "application/json", api, "站点接口")
+        tried.append("站点接口：未命中或需要登录")
+
+    # 1) 直连（成功且正文够长才用）
+    direct_ok = False
+    title_hint = ""
+    try:
+        final, ctype, body = _http_get(url)
+        if looks_binary(body):
+            tried.append("直连：返回了二进制内容")
+        else:
+            text = _html_to_text(ctype, body)
+            if looks_blocked(text):
+                tried.append("直连：疑似风控/登录页")
+            elif len(text.strip()) >= 40:
+                direct_ok = True
+                if mode != "always":
+                    return finish(final, ctype, text, "直连")
+            else:
+                tried.append(f"直连：正文只有 {len(text.strip())} 字")
+    except Exception as exc:
+        tried.append(f"直连：{exc}")
+        body = getattr(exc, "body", "") or ""
+        title_hint = _title_of(body)
+
+    # 2) 浏览器渲染
+    if mode != "off":
+        html = render_html(url)
+        if html:
+            if not title_hint:
+                title_hint = _title_of(html)
+            text = extract_main_text(html)
+            if looks_blocked(text):
+                tried.append("浏览器渲染：遇到登录墙/风控页")
+            elif len(text.strip()) >= 40:
+                return finish(url, "text/html", text, "浏览器渲染")
+            else:
+                tried.append(f"浏览器渲染：正文只有 {len(text.strip())} 字")
+        else:
+            tried.append("浏览器渲染：失败或未找到 Edge")
+
+    # 3) 搜索摘要兜底
+    if WEB.get("search_fallback", True):
+        snip = search_snippets(url, hint=title_hint)
+        if snip.strip():
+            return finish(url, "text/plain", snip, "搜索摘要兜底")
+        tried.append("搜索兜底：没有结果")
+
+    raise ValueError("；".join(tried) or "抓取失败")
+
+
