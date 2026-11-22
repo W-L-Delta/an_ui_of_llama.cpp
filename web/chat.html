@@ -54,10 +54,14 @@
        background:var(--panel2)}
   .top h2{font-size:13.5px;margin:0;font-weight:600;flex:0 1 auto;min-width:0;max-width:30vw;
           overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .chip{font:11px/1.4 ui-monospace,Consolas,monospace;color:var(--dim);background:#141b24;
-        border:1px solid var(--line);border-radius:999px;padding:2px 9px;max-width:28vw;overflow:hidden;
-        text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+  .chip{display:inline-flex;align-items:center;gap:5px;font:11px/1.4 ui-monospace,Consolas,monospace;
+        color:var(--dim);background:#141b24;border:1px solid var(--line);border-radius:999px;padding:2px 9px;
+        max-width:28vw;overflow:hidden;white-space:nowrap;cursor:pointer}
+  .chip svg{flex:0 0 auto;opacity:.85}
+  .chip>span{overflow:hidden;text-overflow:ellipsis}
   .chip:hover{color:var(--text);border-color:var(--line2)}
+  .model-warn{font-size:11px;color:#e0a33a;border:1px solid #4a3a1a;background:#241d0e;
+    border-radius:999px;padding:2px 8px;white-space:nowrap;cursor:help}
   .chip.on{color:#a9c8ff;border-color:#2b4570}
   .spacer{flex:1}
   .dot{width:7px;height:7px;border-radius:50%;background:var(--red);display:inline-block}
@@ -298,10 +302,11 @@
   <main>
     <div class="top">
       <h2 id="convTitle">新会话</h2>
-      <span class="chip" id="chipFolder" title="点击修改工作区文件夹">📁 —</span>
+      <span class="chip" id="chipFolder" title="点击修改工作区文件夹">—</span>
       <span class="chip" id="chipListing" title="是否把目录清单放进上下文">清单 关</span>
       <div class="spacer"></div>
       <span class="status"><span class="dot" id="dot"></span><span id="stat">连接中…</span></span>
+      <span class="model-warn" id="modelWarn" style="display:none" title="">≠ 本会话原模型</span>
       <select id="model" title="已加载模型"></select>
     </div>
     <div class="chat" id="chat">
@@ -341,10 +346,23 @@
   const $ = (id) => document.getElementById(id);
   const CACHE_KEY = "llama-chat-cache-v3";
   const DEF_SETTINGS = { base: "http://127.0.0.1:8080",
-                         system: "", temp: 0.7, topp: 0.8, maxtok: 4096, maxtokFor: {}, showSpaces: true };
+                         system: "", temp: 0.7, topp: 0.8, maxtok: 4096, maxtokFor: {}, showSpaces: true, skin: "auto", accent: "" };
 
   const uid = () => Math.random().toString(36).slice(2, 10);
   let state = null, modelId = "", busy = false, ctrl = null;
+let accentCustom = false;   // 用户是否手选了强调色（否则跟随皮肤）
+
+function currentAccent() {
+  const v = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim();
+  return /^#[0-9a-f]{6}$/i.test(v) ? v : "#4c8dff";
+}
+
+// 把外观设置交给皮肤引擎（它在另一个 script 作用域里）
+function syncSkinCfg() {
+  const st = state && state.settings ? state.settings : {};
+  window.__skinCfg = { skin: st.skin || "auto", accent: st.accent || "" };
+  if (typeof window.__skinRefresh === "function") window.__skinRefresh();
+}
   let streamingConv = null;   // 正在流式输出的会话 id
   let saveTimer = null, dirty = false;
 
@@ -547,6 +565,7 @@
       convs: (Array.isArray(w.convs) ? w.convs : []).map((c) => ({
         id: c.id || uid(), title: c.title || "新会话", createdAt: c.createdAt || Date.now(), perm: c.perm || null,
   autoApprove: Array.isArray(c.autoApprove) ? c.autoApprove : [],
+  model: c.model || "",
   ctxUsed: Number(c.ctxUsed) || 0,
   summary: c.summary || "",
   summaryUpTo: Number(c.summaryUpTo) || 0,
@@ -733,15 +752,40 @@
       box.appendChild(el);
     });
   }
+  // 线条风格文件夹图标（跟随文字颜色，透明背景）
+  const ICON_FOLDER =
+    '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" ' +
+    'stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l1.8 2.2h7.2A1.5 1.5 0 0 1 19 9.7v7.8A1.5 1.5 0 0 1 17.5 19h-13A1.5 1.5 0 0 1 3 17.5z"/>' +
+    '</svg>';
+
   function renderHeader() {
     const w = ws(), c = conv();
     $("convTitle").textContent = c.title || "新会话";
-    $("chipFolder").textContent = "📁 " + (w.folder || "未设置");
+    $("chipFolder").innerHTML = ICON_FOLDER + "<span>" + esc(w.folder || "未设置") + "</span>";
     $("chipFolder").title = w.folder || "点击设置工作区文件夹";
     $("chipListing").textContent = w.includeListing ? "清单 开" : "清单 关";
     $("chipListing").classList.toggle("on", !!w.includeListing);
     $("chipListing").title = w.includeListing
       ? "sent 时会把该目录的顶层清单放进系统提示词" : "点击开关：把目录清单放进上下文";
+
+    // 会话绑定的模型 vs 服务端当前模型
+    const sel = $("model");
+    const warn = $("modelWarn");
+    const bound = c.model || "";
+    if (sel && bound) {
+      const has = Array.prototype.some.call(sel.options, (o) => o.value === bound);
+      if (has && !busy) sel.value = bound;
+      if (bound && modelId && bound !== modelId) {
+        warn.style.display = "";
+        warn.textContent = "≠ 原用 " + bound;
+        warn.title = "本会话之前用的是「" + bound + "」，当前服务端加载的是「" + modelId + "」";
+      } else {
+        warn.style.display = "none";
+      }
+    } else if (warn) {
+      warn.style.display = "none";
+    }
   }
   // ---------------- 上下文占用环 ----------------
   let ctxLimit = 0;
@@ -864,6 +908,7 @@
       });
       const cur = list.find((m) => m.id === modelId) || list[0] || {};
       modelId = cur.id || "";
+      window.__modelHints = list.map((m) => m.id).concat([modelId]).filter(Boolean);
       if (modelId) sel.value = modelId;
       const ctx = (cur.meta || {}).n_ctx;
       ctxLimit = ctx ? Number(ctx) : 0;
@@ -918,6 +963,10 @@
 
   function fillSettings() {
     const s = state.settings, w = ws();
+    accentCustom = !!(s.accent && s.accent.length);
+    $("sSkin").value = s.skin || "auto";
+    $("sAccent").value = s.accent || currentAccent();
+    $("accentHint").textContent = s.accent ? "自定义颜色" : "未自定义";
     $("sSystem").value = s.system;
     const mp = (cfgPrompt[modelId] || "").trim();
     $("modelPromptHint").textContent = mp
@@ -1585,6 +1634,7 @@
     addRow("user", text, umsg.images, umsg.files);
     if (convRef.messages.length === 1) renderChat();
 
+    if (!convRef.model && modelId) { convRef.model = modelId; save(); }
     let sys = "";
     let summaryText = "";
     try {
@@ -1894,7 +1944,21 @@
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
   });
   $("input").addEventListener("input", autoGrow);
-  $("model").addEventListener("change", (e) => { modelId = e.target.value; });
+  $("model").addEventListener("change", async (e) => {
+    const next = e.target.value;
+    const c = conv();
+    const prev = c.model || modelId;
+    if (c.model && next !== c.model && c.messages.length) {
+      const ok = await confirmDlg("切换模型",
+        `这个会话一直在用「${c.model}」，现在要换成「${next}」。\n\n同一会话混用不同模型，回答风格和上下文理解会不连续。确定切换吗？`);
+      if (!ok) { e.target.value = c.model; return; }
+    }
+    modelId = next;
+    c.model = next;          // 绑定到本会话
+    save();
+    renderHeader();
+    toast("本会话模型：" + next);
+  });
 
   $("wsNew").addEventListener("click", async () => {
     const box = await dialog({
@@ -1967,6 +2031,21 @@
         <button class="primary" id="btnOpenConsole" style="font-size:12.5px">打开 llama.cpp 控制台</button>
         <div class="hintx">在程序内打开：切模型、调 ngl / 上下文 / 采样参数、看日志和保活。</div>
       </div>
+      <div class="fld"><label>皮肤</label>
+        <select id="sSkin">
+          <option value="auto">跟随模型（默认）</option>
+          <option value="none">默认 · 纯黑</option>
+          <option value="deepseek">DeepSeek · 深蓝</option>
+          <option value="qwen">Qwen · 天蓝</option>
+        </select>
+      </div>
+      <div class="fld"><label>强调色</label>
+        <div class="rowline">
+          <input id="sAccent" type="color" style="flex:0 0 60px;width:60px;height:32px;padding:2px;border-radius:6px;cursor:pointer">
+          <button id="sAccentAuto">跟随皮肤</button>
+          <span class="hintx" style="margin:0" id="accentHint">未自定义</span>
+        </div>
+      </div>
       <div class="fld"><label>工作区名称（当前）</label><input id="sWsName"></div>
       <div class="fld"><label>工作区文件夹</label>
         <div class="rowline"><input id="sWsFolder"><button data-act="pick">浏览…</button></div></div>
@@ -2011,10 +2090,27 @@
     if (wv) wv.postMessage(JSON.stringify({ type: "open-console" }));
     else toast("控制台只能在程序内打开");
   });
+  $("sAccent").addEventListener("input", () => {
+    accentCustom = true;
+    $("accentHint").textContent = "自定义";
+    const s = state.settings;
+    s.accent = $("sAccent").value;
+    syncSkinCfg();
+  });
+  $("sAccentAuto").onclick = () => {
+    accentCustom = false;
+    $("accentHint").textContent = "跟随皮肤";
+    state.settings.accent = "";
+    $("sAccent").value = currentAccent();
+    syncSkinCfg();
+  };
+
   $("sSave").onclick = () => {
     const s = state.settings;
     s.system = $("sSystem").value;
     s.showSpaces = $("sShowSpaces").checked;
+    s.skin = $("sSkin").value || "auto";
+    s.accent = accentCustom ? ($("sAccent").value || "") : "";
 
     const mt = Math.max(16, Number($("sMaxtok").value) || 4096);
     if (modelId) { s.maxtokFor[modelId] = mt; } else { s.maxtok = mt; }
@@ -2022,12 +2118,13 @@
     w.name = ($("sWsName").value || "工作区").trim();
     w.folder = ($("sWsFolder").value || "").trim();
     w.includeListing = $("sWsListing").checked;
-    save(); renderAll(); connect(); setClose();
+    save(); syncSkinCfg(); renderAll(); connect(); setClose();
     toast("设置已保存");
   };
   $("sReset").onclick = () => {
     state.settings = Object.assign({}, DEF_SETTINGS);
-    save(); fillSettings(); connect(); toast("已恢复默认设置");
+    accentCustom = false;
+    save(); syncSkinCfg(); fillSettings(); connect(); toast("已恢复默认设置");
   };
   $("sDelete").onclick = async () => {
     const w = ws();
@@ -2045,6 +2142,7 @@
     state = await loadState();
     await loadPanelDefaults();
     await loadTools();
+    syncSkinCfg();          // 启动时把外观设置交给皮肤引擎
     renderAll();
     connect();
     setInterval(() => { if (!busy) connect(); }, 8000);
@@ -2063,12 +2161,38 @@
 
   function setVar(k, v) { if (v) document.documentElement.style.setProperty(k, v); }
 
+  // 家族别名表：模型 id、别名、文件名都可能出现，尽量都认得
+  const FAMILY_ALIASES = {
+    deepseek: ["deepseek", "deep-seek", "r1-distill", "qwq-32b-deepseek"],
+    qwen: ["qwen", "qwq", "tongyi", "通义"],
+  };
+  function normName(v) {
+    return String(v || "").toLowerCase().replace(/[\s_]+/g, "-");
+  }
+  function matchFamily(v) {
+    const m = normName(v);
+    if (!m) return "";
+    for (const fam of Object.keys(FAMILY_ALIASES)) {
+      if (m.includes(fam)) return fam;
+      for (const alias of FAMILY_ALIASES[fam]) { if (m.includes(alias)) return fam; }
+    }
+    return "";
+  }
   function familyOf(model) {
-    const m = String(model || "").toLowerCase();
-    if (!m) return "none";
-    if (m.includes("deepseek")) return "deepseek";
-    if (m.includes("qwen")) return "qwen";
+    // 1) 下拉里的模型 id  2) 服务端实际加载的模型文件 / 面板报告的名字
+    const sources = [model];
+    try { if (window.__modelHints) sources.push.apply(sources, window.__modelHints); } catch (e) {}
+    for (const src of sources) {
+      const hit = matchFamily(src);
+      if (hit) return hit;
+    }
     return "none";
+  }
+  function hexToRgba(hex, a) {
+    const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || "").trim());
+    if (!m) return "";
+    const n = parseInt(m[1], 16);
+    return "rgba(" + ((n >> 16) & 255) + ", " + ((n >> 8) & 255) + ", " + (n & 255) + ", " + a + ")";
   }
   function skinFor(family) {
     if (!manifest || !manifest.families) return null;
@@ -2103,7 +2227,7 @@
     prev.classList.remove("on");
     active = 1 - active;
   }
-  function applySkin(skin) {
+  function applySkin(skin, accent) {
     if (!skin) return;
     setVar("--bg", skin.bg0);
     setVar("--bg0", skin.bg0);
@@ -2114,8 +2238,8 @@
     setVar("--line2", skin.line2);
     setVar("--text", skin.text);
     setVar("--dim", skin.dim);
-    setVar("--accent", skin.accent);
-    setVar("--accent-soft", skin.accentSoft);
+    setVar("--accent", (accent || skin.accent));
+    setVar("--accent-soft", accent ? (hexToRgba(accent, 0.18) || skin.accentSoft) : skin.accentSoft);
     setVar("--user-bg", skin.userBg);
     setVar("--user-line", skin.userLine);
     crossfade(skin.image || "");
@@ -2130,8 +2254,11 @@
     const stat = $("stat");
     const connected = stat ? stat.textContent === "已连接" : true;
     const model = connected && sel && sel.value ? sel.value : "";
+    const cfg = window.__skinCfg || {};
     const forced = new URLSearchParams(location.search).get("family");
-    const family = forced || familyOf(model);
+    const picked = cfg.skin && cfg.skin !== "auto" ? cfg.skin : "";
+    const accent = cfg.accent || "";
+    const family = forced || picked || familyOf(model);
     const skin = skinFor(family);
     if (!skin) return;
     const brandName = $("brandName");
@@ -2140,14 +2267,15 @@
       brandName.textContent = label;
       brandName.title = model ? (label + " · " + model) : label;
     }
-    const key = family + "|" + (skin.image || "") + "|" + (skin.caption || "");
+    const key = family + "|" + (skin.image || "") + "|" + (skin.caption || "") + "|" + accent;
     if (key === curKey) return;
     curKey = key;
-    applySkin(skin);
+    applySkin(skin, accent);
   }
   async function boot() {
     layers = [$("bgA"), $("bgB")].filter(Boolean);
     await loadManifest();
+    window.__skinRefresh = () => { curKey = ""; tick(); };
     tick();
     setInterval(tick, 1500);
     const sel = $("model");

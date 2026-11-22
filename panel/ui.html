@@ -284,7 +284,7 @@
     <div class="logo">◈</div>
     <div>
       <h1>llama.cpp 控制台</h1>
-      <p class="sub" id="subPath">—</p>
+      <p class="sub" id="subPath">D:\llama.cpp</p>
     </div>
   </div>
   <div class="hstats">
@@ -515,7 +515,7 @@
   <!-- 提示 -->
   <section class="card" id="tipsCard">
     <div class="card-head">
-      <h2>8 GB 调参参考</h2>
+      <h2>调参参考</h2>
       <span class="hint">本机 GPU</span>
     </div>
     <ul class="tips">
@@ -789,8 +789,9 @@
 
     if (d.gpu) {
       const pct = Math.min(100, Math.round(d.gpu.used_mb / d.gpu.total_mb * 100));
-      $("#gpuName").textContent = d.gpu.name;
-      $("#gpuVal").textContent = `${d.gpu.used_mb} / ${d.gpu.total_mb} MiB (${pct}%)`;
+      $("#gpuName").textContent = PRIVACY ? "本机 GPU" : d.gpu.name;
+      $("#gpuVal").textContent = PRIVACY ? "已隐藏" : `${d.gpu.used_mb} / ${d.gpu.total_mb} MiB (${pct}%)`;
+    applyPrivacy();
       const bar = $("#gpuBar");
       bar.style.width = pct + "%";
       bar.className = pct >= 97 ? "crit" : pct >= 88 ? "hot" : "";
@@ -799,7 +800,7 @@
     if (d.memory && d.memory.total_gb) {
       const m = d.memory;
       const pct = Math.min(100, m.percent || Math.round((m.used_gb / m.total_gb) * 100));
-      $("#ramVal").textContent = `${m.used_gb} / ${m.total_gb} GB (${pct}%)`;
+      $("#ramVal").textContent = PRIVACY ? "已隐藏" : `${m.used_gb} / ${m.total_gb} GB (${pct}%)`;
       const rb = $("#ramBar");
       rb.style.width = pct + "%";
       rb.className = pct >= 93 ? "crit" : pct >= 85 ? "hot" : "";
@@ -837,6 +838,33 @@
     if (sec < 3600) return Math.floor(sec / 60) + " 分钟";
     const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
     return h + " 小时 " + m + " 分";
+  }
+
+  // 隐私模式（截图分享用）：地址加 ?privacy=1
+  const PRIVACY = (() => {
+    try { return new URLSearchParams(location.search).get("privacy") === "1"; } catch (e) { return false; }
+  })();
+  function applyPrivacy() {
+    if (!PRIVACY) return;
+    const set = (sel, txt) => { const el = document.querySelector(sel); if (el) el.textContent = txt; };
+    const hide = (sel) => { const el = document.querySelector(sel); if (el) el.style.visibility = "hidden"; };
+    set("#subPath", "—");
+    set("#gpuName", "本机 GPU");
+    set("#gpuVal", "已隐藏");
+    set("#ramVal", "已隐藏");
+    set("#ramProc", "");
+    document.querySelectorAll(".hint").forEach((el) => {
+      if (/rtx|geforce|gtx|radeon/i.test(el.textContent || "")) el.textContent = "";
+    });
+    set("#fPid", "—");
+    set("#fTps", "—");
+    // 进程号、上次生成速度也属于本机数据
+    document.querySelectorAll(".metric .v, .kv .v").forEach((el) => {
+      if (/^\d+$/.test((el.textContent || "").trim())) el.textContent = "—";
+    });
+    document.querySelectorAll("textarea,input").forEach((el) => {
+      if (el.id === "sModelPrompt" && el.value) { el.value = "（隐私模式已隐藏）"; }
+    });
   }
 
   async function refresh() {
