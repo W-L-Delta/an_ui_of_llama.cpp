@@ -114,24 +114,46 @@ Windows 原生外壳（WinForms + WebView2）在 Linux 上不存在，所以这�
 | 保活 | 计划任务（3 分钟一次） | systemd `Restart=on-failure`（秒级） |
 | 打开方式 | 双击 exe | 应用菜单里的 `.desktop` |
 
-### 一条命令安装
+### 一条命令安装（推荐，不走 raw.githubusercontent）
+
+```bash
+git clone -b linux --depth 1 https://github.com/W-L-Delta/an_ui_of_llama.cpp.git ~/llama-local \
+  && bash ~/llama-local/scripts/setup-linux.sh
+```
+
+> 国内网络下 `raw.githubusercontent.com` 常常不通，所以主推 `git clone`（github.com 本身能连）。
+
+如果 git 也慢，用镜像前缀：
+
+```bash
+git clone -b linux --depth 1 https://gh-proxy.com/https://github.com/W-L-Delta/an_ui_of_llama.cpp.git ~/llama-local \
+  && bash ~/llama-local/scripts/setup-linux.sh
+```
+
+也可以用现成的安装器（需要能访问 raw）：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/W-L-Delta/an_ui_of_llama.cpp/linux/scripts/install-linux.sh | bash
 ```
 
-它会：克隆 `linux` 分支到 `~/llama-local` → 检测显卡（NVIDIA/AMD/Vulkan/CPU）→ 下载对应的 llama.cpp 预编译包
+`setup-linux.sh` 会：检测显卡（NVIDIA/AMD/Vulkan/CPU）→ 下载对应的 llama.cpp 预编译包
 → 生成 `llama.conf.ini`（路径自动转成 Linux 风格）→ 安装 systemd 用户服务与桌面入口。
 
-可选参数（透传给 `setup-linux.sh`）：
+常用参数：
 
 ```bash
-# 指定后端
-curl -fsSL .../install-linux.sh | bash -s -- --backend vulkan
-# 装到别处
-LLAMA_DIR=/opt/llama-local curl -fsSL .../install-linux.sh | bash
-# 只装不改 systemd
-curl -fsSL .../install-linux.sh | bash -s -- --no-service
+# 指定后端（cuda / vulkan / rocm / cpu）
+bash scripts/setup-linux.sh --backend vulkan
+# 只装环境，不动 systemd
+bash scripts/setup-linux.sh --no-service
+# 先看它会做什么
+bash scripts/setup-linux.sh --dry-run
+```
+
+下载 llama.cpp 时如果 GitHub 慢，可以给个镜像前缀：
+
+```bash
+LLAMA_MIRROR=https://gh-proxy.com/ bash scripts/setup-linux.sh
 ```
 
 ### 装完之后
