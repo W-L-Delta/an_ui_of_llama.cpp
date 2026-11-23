@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=llama.cpp 对话与控制台
+Name[en]=llama.cpp Chat & Console
+Comment=本地大模型对话界面（打开浏览器）
+Comment[en]=Local LLM chat UI in your browser
+# 安装脚本会把路径改成真实位置
+Exec=bash -lc '"'"'exec "$HOME"/llama-local/scripts/open-panel.sh'"'"'
+Icon=utilities-terminal
+Terminal=false
+Categories=Development;Utility;Network;
+Keywords=llama;llm;local;ai;chat;
+StartupNotify=false

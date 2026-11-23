@@ -102,6 +102,62 @@ llama-local/
 └── models/              GGUF 模型（自行放置，见 models/README.md）
 ```
 
+## Linux 支持（`linux` 分支）
+
+Windows 原生外壳（WinForms + WebView2）在 Linux 上不存在，所以这个分支换成**浏览器界面 + systemd 服务**：
+
+| 组件 | Windows | Linux |
+|---|---|---|
+| 对话界面 | 原生窗口 | 浏览器打开 `127.0.0.1:8090/chat`（同样的页面） |
+| 控制台 | 原生窗口内的第二个 WebView2 | 浏览器标签页 |
+| 起服务 | `start-llama.ps1` | `start-llama.sh` |
+| 保活 | 计划任务（3 分钟一次） | systemd `Restart=on-failure`（秒级） |
+| 打开方式 | 双击 exe | 应用菜单里的 `.desktop` |
+
+### 一条命令安装
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/W-L-Delta/an_ui_of_llama.cpp/linux/scripts/install-linux.sh | bash
+```
+
+它会：克隆 `linux` 分支到 `~/llama-local` → 检测显卡（NVIDIA/AMD/Vulkan/CPU）→ 下载对应的 llama.cpp 预编译包
+→ 生成 `llama.conf.ini`（路径自动转成 Linux 风格）→ 安装 systemd 用户服务与桌面入口。
+
+可选参数（透传给 `setup-linux.sh`）：
+
+```bash
+# 指定后端
+curl -fsSL .../install-linux.sh | bash -s -- --backend vulkan
+# 装到别处
+LLAMA_DIR=/opt/llama-local curl -fsSL .../install-linux.sh | bash
+# 只装不改 systemd
+curl -fsSL .../install-linux.sh | bash -s -- --no-service
+```
+
+### 装完之后
+
+```bash
+cd ~/llama-local
+# 1) 把 .gguf 放进 models/，改 scripts/llama.conf.ini 的 [model]
+# 2) 起推理服务
+./scripts/start-llama.sh
+# 3) 打开界面（会顺便确保面板和服务在跑）
+./scripts/open-panel.sh
+
+# 常用
+./scripts/start-llama.sh --status
+./scripts/start-llama.sh --stop
+./scripts/start-llama.sh --ensure      # 挂了才拉起
+./scripts/start-llama.sh --base|--qwen36|--deepseek   # 切模型槽位
+systemctl --user status llama-server   # 用 systemd 时的状态
+```
+
+### Linux 上不可用的功能
+
+- **原生窗口外观**（DWM 暗色标题栏、窗口尺寸记忆）：没有原生壳，这些随窗口一起消失了
+- **「打开对话程序」按钮**：改成用默认浏览器打开同一个地址
+- **图片粘贴**照常可用（浏览器能力），工具审批、皮肤、Markdown 全部保留
+
 ## 快速开始
 
 ### 一条命令

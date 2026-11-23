@@ -1,0 +1,29 @@
+[Unit]
+# llama.cpp 推理服务（用户级 systemd）
+# 安装：cp scripts/llama-server.service ~/.config/systemd/user/
+#       systemctl --user daemon-reload
+#       systemctl --user enable --now llama-server
+Description=llama.cpp server (llama-local-chat)
+After=network.target
+
+[Service]
+Type=simple
+# 安装脚本会把这两行改成真实路径
+WorkingDirectory=%h/llama-local
+ExecStart=/usr/bin/env bash %h/llama-local/scripts/start-llama.sh --foreground
+
+# 挂了 3 秒后自动重启，比 Windows 那边的 3 分钟计划任务快得多
+Restart=on-failure
+RestartSec=3
+# 模型加载慢，给足停止时间
+TimeoutStopSec=30
+KillMode=mixed
+
+# 让服务能用到显卡
+# NVIDIA：通常不需要额外配置；若用容器或特殊驱动，可解开下面两行
+# Environment=CUDA_VISIBLE_DEVICES=0
+# AMD：确保用户在 video/render 组
+# SupplementaryGroups=video render
+
+[Install]
+WantedBy=default.target

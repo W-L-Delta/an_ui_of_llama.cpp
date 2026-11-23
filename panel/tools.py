@@ -26,6 +26,8 @@ import urllib.request
 from html.parser import HTMLParser
 from pathlib import Path
 
+IS_WIN = os.name == "nt"   # 平台开关：Linux 分支用 bash / chromium
+
 LEVELS = {"off": 0, "read": 1, "write": 2, "full": 3}
 CREATE_NO_WINDOW = 0x08000000
 
@@ -154,7 +156,8 @@ TOOLS = [
         "name": "shell",
         "level": "full",
         "approval": True,
-        "desc": "在本机执行一条 PowerShell 命令（需要批准）",
+        "desc": ("在本机执行一条 PowerShell 命令（需要批准）" if IS_WIN
+             else "在本机执行一条 shell 命令（bash -lc，需要批准）"),
         "params": {
             "type": "object",
             "properties": {"command": {"type": "string"}},
@@ -365,7 +368,8 @@ def run(name: str, args: dict, level: str, workspace: str) -> dict:
         elif name == "shell":
             cmd = args.get("command") or ""
             proc = subprocess.run(
-                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", cmd],
+                (["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", cmd]
+             if IS_WIN else ["bash", "-lc", cmd]),
                 capture_output=True, timeout=60, creationflags=CREATE_NO_WINDOW,
                 cwd=workspace or None,
             )
@@ -1000,6 +1004,13 @@ def find_edge() -> str:
     except Exception:
         pass
     cand.extend(_EDGE_PATHS)
+    if not IS_WIN:
+        import shutil as _sh
+        for name in ("chromium", "chromium-browser", "google-chrome", "google-chrome-stable",
+                     "microsoft-edge", "microsoft-edge-stable", "brave-browser"):
+            found = _sh.which(name)
+            if found:
+                cand.append(found)
     for c in cand:
         if c and os.path.isfile(c):
             _EDGE_CACHE.append(c)
@@ -1017,8 +1028,9 @@ def render_html(url: str) -> str:
     timeout = float(WEB.get("render_timeout", 45))
     tmp = tempfile.mkdtemp(prefix="llama-render-")
     try:
+        extra = [] if IS_WIN else ["--no-sandbox", "--disable-dev-shm-usage"]
         proc = subprocess.run(
-            [edge, "--headless=new", "--disable-gpu", "--no-first-run",
+            [edge, "--headless=new", "--disable-gpu", "--no-first-run", *extra,
              f"--user-data-dir={tmp}", "--virtual-time-budget=8000",
              "--dump-dom", url],
             capture_output=True, timeout=timeout,
