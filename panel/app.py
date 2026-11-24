@@ -1374,6 +1374,21 @@ class Handler(BaseHTTPRequestHandler):
                     return self._error(f"打开文件管理器失败：{exc}", 500)
                 log(f"reveal {target}")
                 return self._json({"ok": True, "path": str(target)})
+            if path == "/api/router/load":
+                values = parse_conf()
+                port = server_port(values)
+                model = str(payload.get("model") or "").strip()
+                action = str(payload.get("action") or "load").strip().lower()
+                if not model:
+                    return self._error("缺少模型名", 400)
+                if not health(port):
+                    return self._error("llama-server 未运行", 409)
+                route = "/models/unload" if action == "unload" else "/models/load"
+                try:
+                    res = http_json(f"http://127.0.0.1:{port}{route}", 600, {"model": model})
+                except Exception as exc:  # noqa: BLE001
+                    return self._error(f"{action} 失败：{exc}", 500)
+                return self._json({"ok": True, "result": res})
             if path == "/api/router":
                 roles = payload.get("roles")
                 updates = {"router": {}}
@@ -1551,6 +1566,12 @@ class Handler(BaseHTTPRequestHandler):
 
         backup_conf()
         update_conf(updates)
+        # 多模型模式下真正生效的是 preset，改完参数要同步重新生成
+        try:
+            if router_cfg(parse_conf())["enabled"]:
+                write_models_ini(parse_conf(), router_cfg(parse_conf())["roles"])
+        except Exception:  # noqa: BLE001
+            pass
         if not JOB.start("apply", [ROLE_SWITCH[role]]):
             return self._error("启动任务失败", 409)
         return self._json({"ok": True, "written": updates, "job": JOB.snapshot()}, 202)

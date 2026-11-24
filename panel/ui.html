@@ -342,6 +342,12 @@
         <label><b>参与模型</b><span class="k">写入 preset</span></label>
         <div class="ctl" id="routerRoles" style="flex-wrap:wrap"></div>
       </div>
+      <div class="field" style="align-items:flex-start">
+        <label><b>载入状态</b><span class="k">按需加载</span></label>
+        <div class="ctl" id="routerLive" style="flex-wrap:wrap;gap:8px">
+          <span class="hint">—</span>
+        </div>
+      </div>
       <div class="field">
         <label><b>应用</b><span class="k">重启生效</span></label>
         <div class="ctl">
@@ -759,6 +765,7 @@
         ? ("多模型：" + (rt.roles || []).length + " 个预设，最多 " + (rt.models_max || 2) + " 个同时驻留")
         : "同一时刻只能常驻一个模型";
     }
+    renderRouterLive(d);
     $("#routerHint").textContent = rt.enabled
       ? ("已启用：" + (rt.roles || []).join("、") + "，上限 " + (rt.models_max || 2))
       : "8 GB 显存要同时挂两个模型，需要把各自的 ngl / 上下文调低";
@@ -1047,6 +1054,50 @@
     ["#btnApply", "#btnRestart", "#btnStop", "#btnTest"].forEach((s) => { $(s).disabled = busy; });
 
     $("#routerBanner").classList.toggle("hidden", !(d.loaded && d.loaded.router));
+  }
+
+  function renderRouterLive(d) {
+    const box = $("#routerLive");
+    if (!box) return;
+    const rt = d.router || {};
+    const live = d.loaded && d.loaded.router ? (d.loaded.models || []) : null;
+    if (!rt.enabled && !live) {
+      box.innerHTML = '<span class="hint">开启多模型后可在这里单独载入/卸载（不重启）</span>';
+      return;
+    }
+    if (!live) {
+      box.innerHTML = '<span class="hint">配置已开启，重启后生效</span>';
+      return;
+    }
+    box.innerHTML = live.map((m) => {
+      const on = m.status === "loaded";
+      const busy = m.status === "loading";
+      const name = esc((d.models && Object.values(d.models).find((x) => x.alias === m.id) || {}).display_name || m.id);
+      return '<span class="hint" style="display:inline-flex;align-items:center;gap:6px;margin-right:14px">'
+        + (on ? "●" : busy ? "◐" : "○") + " " + name
+        + ' <button class="btn ghost" style="padding:2px 8px;font-size:11px" data-load="' + esc(m.id) + '" data-act="' + (on ? "unload" : "load") + '">'
+        + (on ? "卸载" : busy ? "加载中" : "载入") + "</button></span>";
+    }).join("") || '<span class="hint">没有可用的预设模型</span>';
+    box.querySelectorAll("[data-load]").forEach((b) => {
+      b.onclick = async () => {
+        const id = b.getAttribute("data-load");
+        const act = b.getAttribute("data-act");
+        b.disabled = true;
+        b.textContent = act === "load" ? "加载中…" : "卸载中…";
+        try {
+          const r = await fetch("/api/router/load", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ model: id, action: act }),
+          });
+          const j = await r.json();
+          if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+          refresh();
+        } catch (e) {
+          b.textContent = "失败：" + e.message;
+          setTimeout(() => { b.disabled = false; }, 1500);
+        }
+      };
+    });
   }
 
   function fmtUptime(sec) {
