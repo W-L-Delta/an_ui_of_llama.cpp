@@ -1053,6 +1053,8 @@ function syncSkinCfg() {
       const list = j.data || [];
       const sel = $("model");
       loadedIds = new Set(list.map((m) => m.id));
+      // router 模式：多个模型共用端口，没有单一「家族」，皮肤回落默认
+      window.__routerMode = list.some((m) => m && m.status && typeof m.status === "object");
       const keep = sel.value;
       sel.innerHTML = "";
       const seen = new Set();
@@ -2653,7 +2655,9 @@ function syncSkinCfg() {
     const forced = new URLSearchParams(location.search).get("family");
     const picked = cfg.skin && cfg.skin !== "auto" ? cfg.skin : "";
     const accent = cfg.accent || "";
-    const family = forced || picked || familyOf(model);
+    // 多模型（router）时没有单一模型家族 → 默认用 none（手选皮肤仍优先）
+    const autoFamily = window.__routerMode ? "none" : familyOf(model);
+    const family = forced || picked || autoFamily;
     const skin = skinFor(family);
     if (!skin) return;
     const brandName = $("brandName");
@@ -2662,7 +2666,8 @@ function syncSkinCfg() {
       brandName.textContent = label;
       brandName.title = model ? (label + " · " + model) : label;
     }
-    const key = family + "|" + (skin.image || "") + "|" + (skin.caption || "") + "|" + accent;
+    const key = family + "|" + (skin.image || "") + "|" + (skin.caption || "") + "|" + accent
+      + "|" + (window.__routerMode ? "r" : "");
     if (key === curKey) return;
     curKey = key;
     applySkin(skin, accent);
