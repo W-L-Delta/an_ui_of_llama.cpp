@@ -301,7 +301,8 @@
 </header>
 
 <div class="banner hidden" id="routerBanner">
-  当前处于 router 模式：所有模型由 preset 管理，本面板的切换与参数不会生效。请在 <code>llama.conf.ini</code> 中把 <code>[router] enabled</code> 设为 <code>false</code>。
+  当前运行在 <b>多模型（router）</b>：模型由 <code>scripts\models.ini</code> 管理，请求按模型名路由，未载入的会在首次使用时自动加载。
+      在下方「多模型」里勾选要与不要的模型；单个模型的 ctx / ngl 仍可在这里改（写入 conf，重启后进入 preset）。
 </div>
 <div class="banner hidden" id="confBanner"></div>
 
@@ -409,6 +410,26 @@
           <div class="ctl">
             <label class="switch"><input type="checkbox" id="webFallbackSearch"><span class="track"></span><span class="lbl" id="webFallbackSearchLbl">搜索兜底</span></label>
             <span class="hint">前面都失败时用搜索摘要顶上（会标注不完整）</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="field" style="align-items:flex-start">
+        <label><b>多模型</b><span class="k">router 模式</span></label>
+        <div style="grid-column:2/-1;display:grid;gap:8px">
+          <div class="ctl">
+            <label class="switch"><input type="checkbox" id="routerOn"><span class="track"></span><span class="lbl" id="routerLbl">关闭</span></label>
+            <span class="hint">同时挂多个模型，按需加载，共用一个端口</span>
+          </div>
+          <div class="ctl">
+            <span class="hint" style="min-width:56px">上限</span>
+            <input type="number" id="routerMax" min="1" max="8" step="1" style="width:70px">
+            <span class="hint">个模型同时驻留（超出会按最近使用淘汰）</span>
+          </div>
+          <div class="ctl" id="routerRoles" style="flex-wrap:wrap"></div>
+          <div class="ctl">
+            <button class="btn" id="routerSave" type="button">保存并重启为多模型</button>
+            <span class="hint" id="routerHint">—</span>
           </div>
         </div>
       </div>
@@ -639,8 +660,12 @@
       box.innerHTML = `<p style="grid-column:1/-1;color:#8a97a8;font-size:12px;margin:0">models 目录里没有可用的 .gguf 模型，放入文件后刷新即可。</p>`;
       return;
     }
+    const routerLoaded = new Set(
+      (d.loaded && d.loaded.router ? (d.loaded.models || []) : [])
+        .filter((x) => x.status === "loaded").map((x) => x.id)
+    );
     box.innerHTML = Object.values(d.models).map((m) => {
-      const running = d.loaded && d.loaded.id === m.alias;
+      const running = routerLoaded.has(m.alias) || (d.loaded && d.loaded.id === m.alias);
       return `<button class="model ${m.role === state.selected ? "selected" : ""} ${m.exists ? "" : "missing"}" data-role="${esc(m.role)}">
         <div class="m-top">
           <span class="m-name">${running ? '<i class="run-dot"></i>' : ""}${esc(m.label)}</span>
@@ -692,6 +717,30 @@
     $("#sumThreshold").value = Math.round((chat.sum_threshold || 0.5) * 100);
     $("#sumKeep").value = chat.sum_keep || 4;
 
+    const rt = d.router || {};
+    $("#routerOn").checked = !!rt.enabled;
+    $("#routerLbl").textContent = rt.enabled ? "开启" : "关闭";
+    $("#routerMax").value = rt.models_max || 2;
+    {
+      const sel = new Set(rt.roles || []);
+      const box = $("#routerRoles");
+      box.innerHTML = "";
+      Object.keys(d.models || {}).forEach((role) => {
+        const mm = d.models[role];
+        if (!mm || !mm.alias) return;
+        const id = "rt_" + role;
+        const lab = document.createElement("label");
+        lab.className = "ctl";
+        lab.style.gap = "5px";
+        lab.style.marginRight = "14px";
+        lab.innerHTML = '<input type="checkbox" id="' + id + '" style="width:auto"' + (sel.has(role) ? " checked" : "")
+          + '><span class="hint">' + esc(mm.display_name || mm.alias) + "</span>";
+        box.appendChild(lab);
+      });
+    }
+    $("#routerHint").textContent = rt.enabled
+      ? ("已启用：" + (rt.roles || []).join("、") + "，上限 " + (rt.models_max || 2))
+      : "8 GB 显存要同时挂两个模型，需要把各自的 ngl / 上下文调低";
     const web = d.web || {};
     $("#webEnabled").checked = !!web.enabled;
     $("#webRender").value = web.render || "auto";
@@ -820,6 +869,46 @@
       if (revertEl) revertEl();
     }
   }
+  $("#routerOn").addEventListener("change", () => {
+    $("#routerLbl").textContent = $("#routerOn").checked ? "开启" : "关闭";
+  });
+  $("#routerSave").addEventListener("click", async () => {
+    const roles = [];
+    Object.keys(state.data.models || {}).forEach((role) => {
+      const box = document.getElementById("rt_" + role);
+      if (box && box.checked) roles.push(role);
+    });
+    if (!roles.length) { alert("至少选一个模型"); return; }
+    const btn = $("#routerSave");
+    btn.disabled = true;
+    $("#routerHint").style.color = "var(--amber)";
+    $("#routerHint").textContent = "写入配置并重启…";
+    try {
+      const r = await fetch("/api/router", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: $("#routerOn").checked, models_max: Number($("#routerMax").value) || 2, roles }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+      state.data.router = j;
+      if (j.enabled) {
+        const rr = await fetch("/api/restart", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+        if (!rr.ok) throw new Error("重启失败 HTTP " + rr.status);
+        $("#routerHint").style.color = "";
+        $("#routerHint").textContent = "已切换为多模型模式，正在重启（首次请求会按需加载）";
+      } else {
+        $("#routerHint").style.color = "";
+        $("#routerHint").textContent = "已关闭多模型模式（重启后生效）";
+      }
+      setTimeout(() => location.reload(), 2200);
+    } catch (e) {
+      $("#routerHint").style.color = "var(--red)";
+      $("#routerHint").textContent = "失败：" + e.message;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
   $("#webRender").addEventListener("change", (e) => saveWeb({ render: e.target.value }));
   $("#webSiteApi").addEventListener("change", (e) => {
     const on = e.target.checked;
@@ -876,8 +965,17 @@
     $("#footConf").textContent = d.conf;
 
     const loaded = d.loaded;
-    $("#loadedName").textContent = loaded ? (d.models[Object.keys(d.models).find((k) => d.models[k].alias === loaded.id)]?.label || loaded.id) : (d.running ? "加载中…" : "未运行");
-    $("#loadedAlias").textContent = loaded ? loaded.id : "—";
+    if (loaded && loaded.router) {
+      const ms = loaded.models || [];
+      const on = ms.filter((x) => x.status === "loaded").length;
+      $("#loadedName").textContent = "多模型（router）";
+      $("#loadedAlias").textContent = on + "/" + ms.length + " 个已载入 · 上限 " + ((d.router || {}).models_max || "?");
+      const list = ms.map((x) => (x.status === "loaded" ? "● " : "○ ") + x.id).join("\n");
+      $("#loadedAlias").title = list;
+    } else {
+      $("#loadedName").textContent = loaded ? (d.models[Object.keys(d.models).find((k) => d.models[k].alias === loaded.id)]?.label || loaded.id) : (d.running ? "加载中…" : "未运行");
+      $("#loadedAlias").textContent = loaded ? loaded.id : "—";
+    }
     $("#fCtx").textContent = loaded && loaded.n_ctx ? fmtNum(loaded.n_ctx) : "—";
     $("#fQuant").textContent = loaded ? `${loaded.ftype || "?"} / ${loaded.n_params ? (loaded.n_params / 1e9).toFixed(2) + "B" : "?"}` : "—";
     $("#fPid").textContent = d.pid || "—";

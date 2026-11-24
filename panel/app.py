@@ -446,9 +446,23 @@ def health(port: int) -> bool:
         return False
 
 def loaded_model(port: int):
+    """当前服务端的模型信息。router 模式下会有多个，用 router 标记。"""
     try:
-        data = http_json(f"http://127.0.0.1:{port}/v1/models", 1.5)
-        first = (data.get("data") or [{}])[0]
+        data = http_json(f"http://127.0.0.1:{port}/v1/models", 2.0)
+        items = data.get("data") or []
+        if not items:
+            return None
+        router = any(isinstance(m.get("status"), dict) for m in items)
+        if router:
+            models = []
+            ctx_max = 0
+            for m in items:
+                st = (m.get("status") or {}).get("value") or ""
+                ctx = int(m.get("context_length") or 0)
+                ctx_max = max(ctx_max, ctx)
+                models.append({"id": m.get("id") or "", "status": st, "ctx": ctx})
+            return {"router": True, "id": "router", "n_ctx": ctx_max or None, "models": models}
+        first = items[0]
         meta = first.get("meta") or {}
         return {
             "id": first.get("id") or "",
@@ -820,6 +834,79 @@ def web_cfg(values: dict) -> dict:
     }
 
 
+def router_cfg(values: dict) -> dict:
+    sel = cfg_get(values, "router", "roles", "base,deepseek")
+    roles = [r.strip().lower() for r in sel.split(",") if r.strip()]
+    roles = [r for r in roles if r in ROLE_FILE_KEY]
+    return {
+        "enabled": cfg_get(values, "router", "enabled", "false").strip().lower() in ("true", "1", "yes", "on"),
+        "models_max": max(1, min(8, as_int(cfg_get(values, "router", "models_max", "2"), 2))),
+        "roles": roles,
+    }
+
+
+def write_models_ini(values: dict, roles: list) -> str:
+    """按选中的模型生成 router 预设文件（段名用 alias，保证和 /v1/models 的 id 一致）。"""
+    out = [
+        "; 由控制台自动生成 —— 不要手改，改控制台的「多模型」设置",
+        "; 仅在 llama.conf.ini 里 [router] enabled = true 时生效",
+        "",
+    ]
+    cap = max(2048, as_int(cfg_get(values, "router", "ctx_cap", "16384"), 16384))
+    out.append(f"; 多模型时每个模型的上下文被压到 {cap}（[router] ctx_cap），否则显存放不下")
+    out.append("")
+    for role in roles:
+        section = "gpu" if role == "base" else role
+        key = ROLE_FILE_KEY.get(role, "model")
+        alias = cfg_get(values, "server", ROLE_ALIAS_KEY.get(role, "alias"), role)
+        rel = cfg_get(values, "model", key, "")
+        if not rel:
+            continue
+        path = resolve_path(rel)
+        def g(k, d=""):
+            v = cfg_get(values, section, k, "")
+            return v if v else cfg_get(values, "gpu", k, d)
+        out.append(f"[{alias}]")
+        out.append(f"model = {path}")
+        try:
+            ctx_val = min(int(g("ctx_size", "32768") or 32768), cap)
+        except ValueError:
+            ctx_val = cap
+        out.append(f"ctx-size = {ctx_val}")
+        out.append(f"n-gpu-layers = {g('n_gpu_layers', '99')}")
+        ctk = g("cache_type_k", ""); ctv = g("cache_type_v", "")
+        if ctk: out.append(f"cache-type-k = {ctk}")
+        if ctv: out.append(f"cache-type-v = {ctv}")
+        fa = g("flash_attn", "on")
+        if fa in ("on", "off", "auto"): out.append(f"flash-attn = {fa}")
+        mm = cfg_get(values, section, "mmproj", "")
+        if mm and cfg_get(values, "vision", "enabled", "false").lower() == "true":
+            out.append(f"mmproj = {resolve_path(mm)}")
+        extra = cfg_get(values, section, "extra_args", "").strip()
+        for tok in extra.split():
+            if tok.startswith("--"):
+                continue
+        if extra:
+            # extra_args 是命令行形式，转成 INI 的 key = value 需要成对；这里简化：
+            # 只处理形如 --flag 或 --flag value 的串
+            parts = extra.split()
+            i = 0
+            while i < len(parts):
+                flag = parts[i]
+                if flag.startswith("--"):
+                    name = flag[2:]
+                    val = "on"
+                    if i + 1 < len(parts) and not parts[i + 1].startswith("--"):
+                        val = parts[i + 1]
+                        i += 1
+                    out.append(f"{name} = {val}")
+                i += 1
+        out.append("")
+    target = SCRIPTS / "models.ini"
+    target.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+    return str(target)
+
+
 def chat_cfg(values: dict) -> dict:
     threshold = cfg_get(values, "chat", "sum_threshold", "0.5")
     try:
@@ -938,8 +1025,9 @@ def build_state() -> dict:
         "root": str(ROOT),
         "conf": str(CONF),
         "chat": chat_cfg(values),
+        "router": router_cfg(values),
         "web": web_cfg(values),
-        "router": cfg_get(values, "router", "enabled", "false").lower() == "true",
+
         "server": {
             "host": cfg_get(values, "server", "host", "127.0.0.1"),
             "port": port,
@@ -1286,6 +1374,22 @@ class Handler(BaseHTTPRequestHandler):
                     return self._error(f"打开文件管理器失败：{exc}", 500)
                 log(f"reveal {target}")
                 return self._json({"ok": True, "path": str(target)})
+            if path == "/api/router":
+                roles = payload.get("roles")
+                updates = {"router": {}}
+                if "enabled" in payload:
+                    updates["router"]["enabled"] = "true" if payload.get("enabled") else "false"
+                if "models_max" in payload:
+                    updates["router"]["models_max"] = str(max(1, min(8, as_int(payload.get("models_max"), 2))))
+                if isinstance(roles, list):
+                    clean = [str(r).strip().lower() for r in roles if str(r).strip().lower() in ROLE_FILE_KEY]
+                    updates["router"]["roles"] = ",".join(clean) or "base"
+                if updates["router"]:
+                    update_conf(updates)
+                cfg = router_cfg(parse_conf())
+                if not payload.get("skip_preset"):
+                    write_models_ini(parse_conf(), cfg["roles"])
+                return self._json(cfg)
             if path == "/api/chat/config":
                 updates = {"chat": {}}
                 if "summarize" in payload:
