@@ -1106,7 +1106,16 @@ function syncSkinCfg() {
       try {
         const c = conv();
         const last = lastAssistantModel(c);
-        if (c.mode === "ai" && c.messages.length && last && last !== modelId
+        if (c.messages.length && last && last !== modelId && !busy
+            && c.promptedFor !== modelId && c.mode !== "ai") {
+          // 服务端重启换了模型：下拉框被动变化，同样要问「怎么聊」
+          c.promptedFor = modelId;
+          save();
+          setTimeout(async () => {
+            const ok = await handleModelChange(modelId);
+            if (!ok) { $("model").value = c.model || ""; }
+          }, 400);
+        } else if (c.mode === "ai" && c.messages.length && last && last !== modelId
             && c.aiTriggeredFor !== modelId && !busy) {
           c.aiTriggeredFor = modelId;
           c.userPick = false;
@@ -2233,11 +2242,18 @@ function syncSkinCfg() {
   $("input").addEventListener("input", autoGrow);
   $("model").addEventListener("change", async (e) => {
     const next = e.target.value;
+    const prev = conv().model || modelId;
+    const ok = await handleModelChange(next);
+    if (!ok) e.target.value = prev;      // 取消/未载入 → 下拉回退
+  });
+
+  // 切换模型后的统一处理：可载入性检查 → 询问「单纯切换 / AI 间对话」→ 生效
+  async function handleModelChange(next) {
     const c = conv();
-    const opt = e.target.options[e.target.selectedIndex];
+    const opt = $("model").options[$("model").selectedIndex];
     const onDemand = window.__routerMode && window.__presetIds && window.__presetIds.has(next);
-    if (opt && opt.dataset.loaded === "0" && !loadedIds.has(next) && !onDemand) {
-      // 还没载入：提示去控制台，切换本身不生效
+    const loadable = loadedIds.has(next) || onDemand;
+    if (!loadable) {
       const go = await dialog({
         title: "这个模型还没载入",
         body: `<div class="dlg-tip">「${esc(nameFor(next))}」目前不在显存里，只有已载入的模型能直接切换。</div>
@@ -2247,26 +2263,45 @@ function syncSkinCfg() {
         danger: false,
       });
       if (go) openConsole();
-      e.target.value = c.model || modelId;
-      return;
+      return false;
     }
-    modelId = next;
-    c.model = next;          // 绑定到本会话
-    c.userPick = true;       // 这是用户主动选的，发送时才询问
-    save();
-    renderHeader();
+
     const last = lastAssistantModel(c);
-    if (c.mode === "ai" && c.messages.length && last && last !== next) {
+    const needAsk = c.messages.length > 0 && last && last !== next;
+
+    if (needAsk && c.mode !== "ai") {
+      const choice = await switchModeDlg(last, next);
+      if (!choice) return false;                       // 返回：什么都不改
+      c.mode = choice === "ai" ? "ai" : "user";
+      c.model = next;
+      c.userPick = false;
+      modelId = next;
+      save(); renderHeader();
+      if (choice === "ai") {
+        c.aiTriggeredFor = next;
+        save();
+        setTimeout(() => startAiTurn(), 150);
+      }
+      return true;
+    }
+
+    // 新会话 / 同一模型 / 已经在 AI 间对话模式
+    modelId = next;
+    c.model = next;
+    c.userPick = false;
+    save(); renderHeader();
+    if (needAsk && c.mode === "ai") {
       c.aiTriggeredFor = next;
       save();
       toast("AI 间对话：由 " + nameFor(next) + " 接手");
-      setTimeout(() => startAiTurn(), 120);
+      setTimeout(() => startAiTurn(), 150);
     } else if (onDemand && !loadedIds.has(next)) {
       toast("已选 " + nameFor(next) + "：首次发消息时会自动加载（约 10 秒）");
     } else {
       toast("本会话模型：" + nameFor(next));
     }
-  });
+    return true;
+  }
 
   // ---------------- 切换模型后的聊天方式 ----------------
   function lastAssistantModel(c) {
@@ -2324,31 +2359,9 @@ function syncSkinCfg() {
 
   async function trySend() {
     if (busy) return;
-    const c = conv();
-    const last = lastAssistantModel(c);
     const text = $("input").value.trim();
     const hasAtt = pendingAtts.length > 0;
     if (!text && !hasAtt) return;
-    // 判据：下拉框当前值与上一条回答的模型是否不同
-    // （用户主动选择、或服务端重启导致下拉变化，都算；后者也是真实换模型）
-    const picked = $("model").value || modelId;
-    if (c.messages.length && last && last !== picked) {
-      const choice = await switchModeDlg(last, picked);
-      if (!choice) return;                 // 返回：保留输入，下次再问
-      c.mode = choice === "ai" ? "ai" : "user";
-      c.model = picked;
-      c.userPick = false;
-      modelId = picked;
-      save(); renderHeader();
-      if (choice === "ai") {
-        if (text || hasAtt) await send();
-        else await startAiTurn();
-        return;
-      }
-    } else {
-      c.model = picked;
-      c.userPick = false;
-    }
     await send();
   }
 
