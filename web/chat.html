@@ -964,16 +964,40 @@ function syncSkinCfg() {
     return t.length > MAX_REASONING ? (t.slice(0, MAX_REASONING) + "\n…（思考过长，已截断）") : t;
   }
 
-  function toApiMessage(m) {
+  // 这个会话里参与过的模型（去重，含当前选中的）
+  function participantsOf(c) {
+    const set = new Set();
+    (c.messages || []).forEach((m) => {
+      if (m.role === "assistant" && m.model) set.add(m.model);
+    });
+    if (c.model) set.add(c.model);
+    if (modelId) set.add(modelId);
+    return Array.from(set);
+  }
+
+  // 多模型会话：给每条助手消息加 [模型名] 前缀，让当前模型知道哪句是谁说的
+  function toApiMessage(m, tag) {
+    const withTag = (msg) => {
+      if (!tag || !tag.on || msg.role !== "assistant") return msg;
+      if (msg.tool_calls) return msg;                  // 工具调用那条不加前缀，避免干扰配对
+      const who = m.model || tag.fallback || "";
+      if (!who) return msg;
+      const text = (msg.content || "");
+      return Object.assign({}, msg, { content: "[" + who + "]\n" + text });
+    };
+    if (m.role === "tool") return { role: "tool", tool_call_id: m.tool_call_id, content: m.content };
     if (m.role === "tool") return { role: "tool", tool_call_id: m.tool_call_id, content: m.content };
     if (m.role === "assistant" && m.tool_calls) {
       return { role: "assistant", content: m.content || "", tool_calls: m.tool_calls };
     }
-    if (!m.images || !m.images.length) return { role: m.role, content: m.content };
+    if (!m.images || !m.images.length) {
+      const msg = { role: m.role, content: m.content };
+      return withTag(msg);
+    }
     const parts = [];
     if (m.content) parts.push({ type: "text", text: m.content });
     m.images.forEach((u) => parts.push({ type: "image_url", image_url: { url: u } }));
-    return { role: m.role, content: parts };
+    return withTag({ role: m.role, content: parts });
   }
   function renderChat() {
     // 流式输出期间不要重建线程，否则实时气泡会被销毁
@@ -1126,6 +1150,16 @@ function syncSkinCfg() {
         } catch (e) {}
       }
       parts.push(extra);
+    }
+    // 多模型会话：告诉模型这是「群聊」，历史里的 [模型名] 是出处标记
+    const people = participantsOf({ messages: (typeof conv === "function" ? conv().messages : []), model: (typeof conv === "function" ? conv().model : "") });
+    if (people.length > 1) {
+      parts.push([
+        "【多模型会话】这个会话里参与过多个模型：" + people.join("、") + "。",
+        "你是其中的「" + (modelId || "当前模型") + "」。",
+        "历史消息中每条助手回答前的 [模型名] 是出处标记，不是你写的，不要模仿它的口吻，也不要重复它的内容。",
+        "可以直接引用、补充或纠正其他模型的回答；需要区分时，用「刚才那个模型说的是…」。",
+      ].join("\n"));
     }
     // 有写权限时，提示长文分章 + 已在磁盘的内容不会留在上下文里
     if (["write", "full"].includes(convPerm())) {
@@ -1819,9 +1853,11 @@ function syncSkinCfg() {
         const sysParts = [];
         if (sys) sysParts.push({ role: "system", content: sys });
         if (summaryText) sysParts.push({ role: "system", content: "【较早对话的摘要】\n" + summaryText });
+        const people = participantsOf(convRef);
+        const tag = { on: people.length > 1, fallback: convRef.model || "" };
         const msgs = sysParts
           .concat(turnMsgs)
-          .concat(convRef.messages.map(toApiMessage));
+          .concat(convRef.messages.map((m) => toApiMessage(m, tag)));
         const bub = addRow("assistant", "", null, null, null, modelId);
         const rowEl = bub.closest(".row");
         const res = await streamRound(msgs, bub, roundTools);
