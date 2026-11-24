@@ -676,6 +676,7 @@ def build_models(values: dict) -> dict:
     }
     prompts = load_prompts()
     names = load_names()
+    vision_wanted = load_vision()
 
     # 视觉投影（mmproj）只对支持多模态的模型有意义，且必须真的存在投影文件
 
@@ -700,6 +701,7 @@ def build_models(values: dict) -> dict:
             "role": role,
             "system_prompt": prompts.get(role, ""),
             "display_name": names.get(role, ""),
+            "vision_wanted": bool(vision_wanted.get(role, False)),
             "label": label,
             "file": rel,
             "path": str(path) if path else "",
@@ -722,6 +724,7 @@ def build_models(values: dict) -> dict:
 
 PROMPTS_FILE = DATA_DIR / "model-prompts.json"
 NAMES_FILE = DATA_DIR / "model-names.json"
+VISION_FILE = DATA_DIR / "model-vision.json"
 
 
 def load_prompts() -> dict:
@@ -738,6 +741,27 @@ def load_names() -> dict:
         return data if isinstance(data, dict) else {}
     except Exception:  # noqa: BLE001
         return {}
+
+
+def load_vision() -> dict:
+    try:
+        data = json.loads(VISION_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def save_vision(role: str, on: bool) -> dict:
+    roles = {r[0] for r in ROLES}
+    if role not in roles:
+        raise ValueError(f"未知模型：{role}")
+    data = load_vision()
+    data[role] = bool(on)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = VISION_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(VISION_FILE)
+    return data
 
 
 def save_name(role: str, name: str) -> dict:
@@ -1382,6 +1406,11 @@ class Handler(BaseHTTPRequestHandler):
             "server": {"threads": str(threads), "parallel": str(parallel)},
             "vision": {"enabled": "true" if vision else "false"},
         }
+        # 记住这个模型对视觉投影的意愿（换模型再切回来时恢复）
+        try:
+            save_vision(role, vision)
+        except ValueError:
+            pass
         model_rel = cfg_get(values, "model", ROLE_FILE_KEY.get(role, ""), "").lower()
         if not ("qwen" in model_rel and "deepseek" not in model_rel):
             # 非 Qwen 家族没有对应的视觉投影，强制关闭
