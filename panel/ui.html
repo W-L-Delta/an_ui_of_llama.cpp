@@ -317,6 +317,41 @@
     <div class="models" id="modelList"></div>
   </section>
 
+  <!-- 多模型 -->
+  <section class="card" id="routerCard">
+    <div class="card-head">
+      <h2>多模型</h2>
+      <span class="hint">router 模式 · 多个模型共用一个端口，按需加载</span>
+    </div>
+    <div class="params">
+      <div class="field">
+        <label><b>启用</b><span class="k">[router] enabled</span></label>
+        <div class="ctl">
+          <label class="switch"><input type="checkbox" id="routerOn"><span class="track"></span><span class="lbl" id="routerLbl">关闭</span></label>
+          <span class="hint">同时挂多个模型，按需加载，共用一个端口</span>
+        </div>
+      </div>
+      <div class="field">
+        <label><b>驻留上限</b><span class="k">models_max</span></label>
+        <div class="ctl">
+          <input type="number" id="routerMax" min="1" max="8" step="1" style="width:70px">
+          <span class="hint">个模型同时驻留（超出会按最近使用淘汰）</span>
+        </div>
+      </div>
+      <div class="field" style="align-items:flex-start">
+        <label><b>参与模型</b><span class="k">写入 preset</span></label>
+        <div class="ctl" id="routerRoles" style="flex-wrap:wrap"></div>
+      </div>
+      <div class="field">
+        <label><b>应用</b><span class="k">重启生效</span></label>
+        <div class="ctl">
+          <button class="btn" id="routerSave" type="button">保存并重启为多模型</button>
+          <span class="hint" id="routerHint">—</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- 参数 -->
   <section class="card" id="paramsCard">
     <div class="card-head">
@@ -410,26 +445,6 @@
           <div class="ctl">
             <label class="switch"><input type="checkbox" id="webFallbackSearch"><span class="track"></span><span class="lbl" id="webFallbackSearchLbl">搜索兜底</span></label>
             <span class="hint">前面都失败时用搜索摘要顶上（会标注不完整）</span>
-          </div>
-        </div>
-      </div>
-
-      <div class="field" style="align-items:flex-start">
-        <label><b>多模型</b><span class="k">router 模式</span></label>
-        <div style="grid-column:2/-1;display:grid;gap:8px">
-          <div class="ctl">
-            <label class="switch"><input type="checkbox" id="routerOn"><span class="track"></span><span class="lbl" id="routerLbl">关闭</span></label>
-            <span class="hint">同时挂多个模型，按需加载，共用一个端口</span>
-          </div>
-          <div class="ctl">
-            <span class="hint" style="min-width:56px">上限</span>
-            <input type="number" id="routerMax" min="1" max="8" step="1" style="width:70px">
-            <span class="hint">个模型同时驻留（超出会按最近使用淘汰）</span>
-          </div>
-          <div class="ctl" id="routerRoles" style="flex-wrap:wrap"></div>
-          <div class="ctl">
-            <button class="btn" id="routerSave" type="button">保存并重启为多模型</button>
-            <span class="hint" id="routerHint">—</span>
           </div>
         </div>
       </div>
@@ -1025,7 +1040,7 @@
 
     ["#btnApply", "#btnRestart", "#btnStop", "#btnTest"].forEach((s) => { $(s).disabled = busy; });
 
-    $("#routerBanner").classList.toggle("hidden", !d.router);
+    $("#routerBanner").classList.toggle("hidden", !(d.loaded && d.loaded.router));
   }
 
   function fmtUptime(sec) {
