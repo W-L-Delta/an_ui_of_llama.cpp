@@ -823,12 +823,25 @@ function syncSkinCfg() {
     setCtx(c && c.ctxUsed ? c.ctxUsed : estimateTokens(c));
   }
 
-  function addRow(role, text, images, files) {
+  function addRow(role, text, images, files, reasoning) {
     const row = document.createElement("div");
     row.className = "row " + role;
     row.innerHTML = '<div class="av">' + (role === "user" ? "我" : "AI") + '</div><div class="bub"></div>';
     const bub = row.querySelector(".bub");
     bub.innerHTML = md(text || "");
+    // 思考过程：只用于显示，绝不回传给模型（见 toApiMessage）
+    if (role === "assistant" && reasoning) {
+      const det = document.createElement("details");
+      det.className = "think";
+      const sm = document.createElement("summary");
+      sm.textContent = "思考过程（" + reasoning.length + " 字）";
+      const body = document.createElement("div");
+      body.className = "body";
+      body.textContent = reasoning;
+      det.appendChild(sm);
+      det.appendChild(body);
+      bub.insertBefore(det, bub.firstChild);
+    }
     if (files && files.length) {
       const fbox = document.createElement("div");
       fbox.className = "msg-files";
@@ -856,6 +869,15 @@ function syncSkinCfg() {
     return bub;
   }
 
+  // 注意：reasoning（思考过程）只存不传。回传会白吃几百到上千 token，
+  // 且 DeepSeek 官方建议 reasoning_content 不放进后续 messages。
+  // 思考过程落盘上限：避免把超长推演写进会话文件
+  const MAX_REASONING = 20000;
+  function capReasoning(s) {
+    const t = s || "";
+    return t.length > MAX_REASONING ? (t.slice(0, MAX_REASONING) + "\n…（思考过长，已截断）") : t;
+  }
+
   function toApiMessage(m) {
     if (m.role === "tool") return { role: "tool", tool_call_id: m.tool_call_id, content: m.content };
     if (m.role === "assistant" && m.tool_calls) {
@@ -880,7 +902,8 @@ function syncSkinCfg() {
     c.messages.forEach((m, i) => {
       if (m.role === "tool" || m.role === "system") return;
       const hasText = !!(m.content && m.content.trim());
-      const bub = (m.tool_calls && !hasText) ? null : addRow(m.role, m.content, m.images, m.files);
+      const bub = (m.tool_calls && !hasText && !m.reasoning)
+        ? null : addRow(m.role, m.content, m.images, m.files, m.reasoning);
       if (m.role === "assistant" && Array.isArray(m.created)) m.created.forEach((f) => renderFilePill($("thread"), f));
       if (m.tool_calls) {
         m.tool_calls.forEach((tc) => {
@@ -1680,7 +1703,8 @@ function syncSkinCfg() {
         const res = await streamRound(msgs, bub, roundTools);
 
         if (res.toolCalls.length) {
-          convRef.messages.push({ role: "assistant", content: res.answer || "", tool_calls: res.toolCalls });
+          convRef.messages.push({ role: "assistant", content: res.answer || "", tool_calls: res.toolCalls,
+                                  reasoning: capReasoning(res.reasoning) });
           save();
           for (const tc of res.toolCalls) {
             let args = {};
@@ -1728,6 +1752,7 @@ function syncSkinCfg() {
           bub.appendChild(warn);
         }
         const finalMsg = { role: "assistant", content: res.answer };
+        if (res.reasoning) finalMsg.reasoning = capReasoning(res.reasoning);
         if (turnFiles.length) finalMsg.created = turnFiles;
         convRef.messages.push(finalMsg);
         if (turnFiles.length) turnFiles.forEach((f) => renderFilePill($("thread"), f));
