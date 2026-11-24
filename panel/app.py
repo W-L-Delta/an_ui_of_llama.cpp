@@ -675,6 +675,7 @@ def build_models(values: dict) -> dict:
         "ctv": cfg_get(values, "gpu", "cache_type_v", "q8_0"),
     }
     prompts = load_prompts()
+    names = load_names()
 
     # 视觉投影（mmproj）只对支持多模态的模型有意义，且必须真的存在投影文件
 
@@ -698,6 +699,7 @@ def build_models(values: dict) -> dict:
         models[role] = {
             "role": role,
             "system_prompt": prompts.get(role, ""),
+            "display_name": names.get(role, ""),
             "label": label,
             "file": rel,
             "path": str(path) if path else "",
@@ -719,6 +721,7 @@ def build_models(values: dict) -> dict:
     return models
 
 PROMPTS_FILE = DATA_DIR / "model-prompts.json"
+NAMES_FILE = DATA_DIR / "model-names.json"
 
 
 def load_prompts() -> dict:
@@ -727,6 +730,33 @@ def load_prompts() -> dict:
         return data if isinstance(data, dict) else {}
     except Exception:  # noqa: BLE001
         return {}
+
+
+def load_names() -> dict:
+    try:
+        data = json.loads(NAMES_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def save_name(role: str, name: str) -> dict:
+    roles = {r[0] for r in ROLES}
+    if role not in roles:
+        raise ValueError(f"未知模型：{role}")
+    data = load_names()
+    name = (name or "").strip()
+    if len(name) > 40:
+        raise ValueError("显示名最多 40 个字符")
+    if name:
+        data[role] = name
+    else:
+        data.pop(role, None)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = NAMES_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(NAMES_FILE)
+    return data
 
 
 def save_prompt(role: str, text: str) -> dict:
@@ -1263,6 +1293,14 @@ class Handler(BaseHTTPRequestHandler):
                 local_tools.set_web_config(web_cfg(parse_conf()))
                 local_tools.clear_search_cache()
                 return self._json(web_cfg(parse_conf()))
+            if path == "/api/model-name":
+                role = str(payload.get("role") or "").strip().lower()
+                try:
+                    data = save_name(role, str(payload.get("name") or ""))
+                except ValueError as exc:
+                    return self._error(str(exc), 400)
+                log(f"model display name saved for {role}")
+                return self._json({"ok": True, "names": data})
             if path == "/api/model-prompt":
                 role = str(payload.get("role") or "").strip().lower()
                 try:

@@ -834,10 +834,11 @@ function syncSkinCfg() {
     if (c.model && !counts.has(c.model)) counts.set(c.model, 0);
     const rows = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
     title.textContent = rows.length ? ("共 " + rows.length + " 个模型参与过") : "还没有对话";
-    box.innerHTML = rows.map(([name, cnt]) => {
-      const cur = name === modelId ? '<span class="mf-cur">当前</span>' : "";
+    box.innerHTML = rows.map(([id, cnt]) => {
+      const name = nameFor(id);
+      const cur = id === modelId ? '<span class="mf-cur">当前</span>' : "";
       const n = cnt ? (cnt + " 条回答") : "未使用";
-      return '<div class="mf-row" title="' + esc(name) + '">'
+      return '<div class="mf-row" title="' + esc(name + (name !== id ? "（" + id + "）" : "")) + '">'
         + '<span class="mf-name">' + esc(name) + "</span>"
         + '<span class="mf-cnt">' + n + "</span>" + cur + "</div>";
     }).join("") || '<div class="mf-row"><span class="mf-cnt">这个会话还没有模型回答</span></div>';
@@ -908,9 +909,16 @@ function syncSkinCfg() {
     setCtx(c && c.ctxUsed ? c.ctxUsed : estimateTokens(c));
   }
 
+  // 模型 id → 显示名（控制台「显示名」里配的，没配就用 id）
+  function nameFor(id) {
+    const t = String(id || "").trim();
+    if (!t) return "";
+    return cfgNames[t] || t;
+  }
+
   // 头像上显示模型短名（长名截断，悬停看全称）
   function shortModel(m) {
-    const t = String(m || "").trim();
+    const t = nameFor(m);
     if (!t) return "AI";
     return t.length > 16 ? t.slice(0, 15) + "…" : t;
   }
@@ -921,7 +929,8 @@ function syncSkinCfg() {
     const isUser = role === "user";
     const label = isUser ? "我" : shortModel(model);
     row.innerHTML = '<div class="av' + (isUser ? "" : " model") + '" title="'
-      + esc(isUser ? "我" : (model || "AI")) + '">' + esc(label) + '</div><div class="bub"></div>';
+      + esc(isUser ? "我" : (nameFor(model) || "AI") + (model && nameFor(model) !== model ? "（" + model + "）" : ""))
+      + '">' + esc(label) + '</div><div class="bub"></div>';
     const bub = row.querySelector(".bub");
     bub.innerHTML = md(text || "");
     // 思考过程：只用于显示，绝不回传给模型（见 toApiMessage）
@@ -980,7 +989,7 @@ function syncSkinCfg() {
     const withTag = (msg) => {
       if (!tag || !tag.on || msg.role !== "assistant") return msg;
       if (msg.tool_calls) return msg;                  // 工具调用那条不加前缀，避免干扰配对
-      const who = m.model || tag.fallback || "";
+      const who = nameFor(m.model || tag.fallback || "");
       if (!who) return msg;
       const text = (msg.content || "");
       return Object.assign({}, msg, { content: "[" + who + "]\n" + text });
@@ -1066,19 +1075,21 @@ function syncSkinCfg() {
   let cfgMaxTok = {};
   let cfgVision = {};
   let cfgPrompt = {};
+  let cfgNames = {};      // 模型 id → 控制台里设置的显示名
   let chatCfg = { summarize: true, sum_threshold: 0.5, sum_keep: 4 };
   async function loadPanelDefaults() {
     try {
       const j = await apiGet("/api/state");
-      const map = {}, vis = {}, prompts = {};
+      const map = {}, vis = {}, prompts = {}, names = {};
       Object.keys(j.models || {}).forEach((k) => {
         const m = j.models[k];
         if (!m || !m.alias) return;
         if (m.max_tokens) map[m.alias] = Number(m.max_tokens);
         vis[m.alias] = !!m.vision_ok;
         prompts[m.alias] = m.system_prompt || "";
+        if (m.display_name) names[m.alias] = m.display_name;
       });
-      cfgMaxTok = map; cfgVision = vis; cfgPrompt = prompts;
+      cfgMaxTok = map; cfgVision = vis; cfgPrompt = prompts; cfgNames = names;
       if (j.chat) chatCfg = j.chat;
     } catch (e) {}
   }
@@ -1154,11 +1165,13 @@ function syncSkinCfg() {
     // 多模型会话：告诉模型这是「群聊」，历史里的 [模型名] 是出处标记
     const people = participantsOf({ messages: (typeof conv === "function" ? conv().messages : []), model: (typeof conv === "function" ? conv().model : "") });
     if (people.length > 1) {
+      const shown = people.map(nameFor);
+      const mine = nameFor(modelId) || "当前模型";
       parts.push([
-        "【多模型会话】这个会话里参与过多个模型：" + people.join("、") + "。",
-        "你是其中的「" + (modelId || "当前模型") + "」。",
-        "历史消息中每条助手回答前的 [模型名] 是出处标记，不是你写的，不要模仿它的口吻，也不要重复它的内容。",
-        "可以直接引用、补充或纠正其他模型的回答；需要区分时，用「刚才那个模型说的是…」。",
+        "【多模型会话】本会话由多个模型先后参与：" + shown.join("、") + "。",
+        "你本轮对应的标注标识是「" + mine + "」——它只用来说明哪条回答出自谁，不代表你的身份，也不改变前面给你的角色设定。",
+        "历史消息里每条助手回答前的 [标识] 是出处，不是你写的；不要模仿它的口吻，也不要重复它的内容。",
+        "可以直接引用、补充或纠正其他模型的说法；需要区分时，用「刚才那个模型说的是…」。",
       ].join("\n"));
     }
     // 有写权限时，提示长文分章 + 已在磁盘的内容不会留在上下文里
