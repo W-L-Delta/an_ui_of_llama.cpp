@@ -1068,6 +1068,13 @@ function syncSkinCfg() {
       }
       parts.push(extra);
     }
+    // 有写权限时，提示长文分章 + 已在磁盘的内容不会留在上下文里
+    if (["write", "full"].includes(convPerm())) {
+      parts.push([
+        "写长文（小说、报告等）请分章：先用 write 写第一章，之后用 write 的 append=true 追加后续章节，不要一次写完整篇。",
+        "已写入文件的内容不会保留在对话上下文里；需要引用前面章节时，用 read 读回相关部分。",
+      ].join("\n"));
+    }
     return parts.join("\n\n");
   }
 
@@ -1459,10 +1466,28 @@ function syncSkinCfg() {
     try { return new URL(url).hostname.replace(/^www\./, ""); } catch (e) { return ""; }
   }
 
+  // 写/追加成功后，把 tool_call 里的大段正文换成「路径 + 字数」，
+  // 否则已落盘的正文会一直占着上下文（每轮重发）。需要引用时用 read 读回。
+  const TRIM_KEEP = 400;   // 参数小于这个长度就不动，避免把小写入弄乱
+  function trimWrittenArgs(tc, args, result) {
+    try {
+      if (!tc || !tc.function) return;
+      if (tc.function.name !== "write" && tc.function.name !== "edit") return;
+      if (!/^已(写入|追加|修改)/.test(result || "")) return;
+      const raw = tc.function.arguments || "";
+      const content = typeof args.content === "string" ? args.content : "";
+      const newText = typeof args.new === "string" ? args.new : "";
+      if (content.length < TRIM_KEEP && newText.length < TRIM_KEEP) return;
+      const slim = { path: args.path || args.file || "", chars: content.length || newText.length,
+                     appended: !!args.append, trimmed: true };
+      tc.function.arguments = JSON.stringify(slim);
+    } catch (e) {}
+  }
+
   function createdPath(tc, result) {
     const name = tc.function.name;
     if (name !== "write" && name !== "edit") return null;
-    const m = /已(?:写入|修改)\s+([^（\n]+)/.exec(result || "");
+    const m = /已(?:写入|追加|修改)\s+([^（\n]+)/.exec(result || "");
     if (!m) return null;
     return m[1].trim();
   }
@@ -1592,7 +1617,19 @@ function syncSkinCfg() {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload), signal: ctrl.signal,
     });
-    if (!resp.ok || !resp.body) throw new Error("HTTP " + resp.status);
+    if (!resp.ok || !resp.body) {
+      let detail = "HTTP " + resp.status;
+      try {
+        const txtBody = await resp.text();
+        try {
+          const jj = JSON.parse(txtBody);
+          detail = (jj.error && jj.error.message) || detail;
+        } catch (e2) { if (txtBody && txtBody.length < 400) detail = txtBody; }
+      } catch (e3) {}
+      const err = new Error(detail);
+      err.httpStatus = resp.status;
+      throw err;
+    }
 
     const reader = resp.body.getReader();
     const dec = new TextDecoder();
@@ -1731,8 +1768,9 @@ function syncSkinCfg() {
         const res = await streamRound(msgs, bub, roundTools);
 
         if (res.toolCalls.length) {
-          convRef.messages.push({ role: "assistant", content: res.answer || "", tool_calls: res.toolCalls,
-                                  reasoning: capReasoning(res.reasoning) });
+          const asstMsg = { role: "assistant", content: res.answer || "", tool_calls: res.toolCalls,
+                            reasoning: capReasoning(res.reasoning) };
+          convRef.messages.push(asstMsg);
           save();
           for (const tc of res.toolCalls) {
             let args = {};
@@ -1755,6 +1793,7 @@ function syncSkinCfg() {
               catch (e) { out = "错误：" + e.message; }
             }
             renderTrace(bub, tc, out);
+            trimWrittenArgs(tc, args, out);   // 正文已落盘，上下文里只留路径和字数
             { const cp = createdPath(tc, out); if (cp) turnFiles.push({ path: cp, name: cp.split(/[\\/]/).pop() }); }
             if (toolUse[tc.function.name] !== undefined) toolUse[tc.function.name] += 1;
             convRef.messages.push({ role: "tool", tool_call_id: tc.id, content: out });
@@ -1804,7 +1843,17 @@ function syncSkinCfg() {
         if (last) last.querySelector(".bub").innerHTML += '<div style="color:var(--amber);font-size:11.5px;margin-top:6px">已停止</div>';
       } else {
         const last = $("thread").lastElementChild;
-        if (last) last.querySelector(".bub").innerHTML = '<span style="color:var(--red)">请求失败：' + esc(e.message || e) + "</span>";
+        if (last) {
+          const em = String(e.message || e);
+          const truncated = /parse tool call|parse_error|missing closing quote|truncat/i.test(em);
+          const hint = truncated
+            ? '<div style="color:var(--amber);font-size:11.5px;margin-top:6px">'
+              + "看起来是模型输出被截断（单次生成上限 " + maxtokFor(modelId) + " token），工具调用参数不完整。"
+              + "可以把任务拆小（例如分章写入），或在设置里调大 max_tokens。</div>"
+            : "";
+          last.querySelector(".bub").innerHTML =
+            '<span style="color:var(--red)">请求失败：' + esc(em.slice(0, 600)) + "</span>" + hint;
+        }
       }
     } finally {
       streamingConv = null;

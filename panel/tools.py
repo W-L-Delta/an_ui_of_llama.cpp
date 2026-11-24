@@ -90,10 +90,14 @@ TOOLS = [
         "name": "write",
         "level": "write",
         "approval": True,
-        "desc": "写入或覆盖一个文件（需要批准）",
+        "desc": "写入文件：默认覆盖；append=true 时追加到末尾（长文分章写用这个，需要批准）",
         "params": {
             "type": "object",
-            "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+            "properties": {
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+                "append": {"type": "boolean", "description": "true = 追加到文件末尾，不覆盖已有内容"},
+            },
             "required": ["path", "content"],
         },
     },
@@ -328,10 +332,25 @@ def run(name: str, args: dict, level: str, workspace: str) -> dict:
 
         elif name == "write":
             target = _resolve(workspace, args.get("path") or "", level)
+            if target.is_dir():
+                return {"ok": False, "error": f"这是一个目录，需要给出带文件名的路径：{target}"}
             target.parent.mkdir(parents=True, exist_ok=True)
             content = args.get("content") or ""
-            target.write_text(content, encoding="utf-8")
-            out = f"已写入 {target}（{len(content)} 字符）"
+            append = bool(args.get("append"))
+            if append:
+                last = ""
+                if target.exists() and target.stat().st_size > 0:
+                    with target.open("rb") as fh:
+                        fh.seek(-1, 2)
+                        last = fh.read(1).decode("utf-8", "ignore")
+                with target.open("a", encoding="utf-8") as fh:
+                    if last and last not in ("\n", "\r") and not content.startswith("\n"):
+                        fh.write("\n")
+                    fh.write(content)
+                out = f"已追加 {target}（{len(content)} 字符）"
+            else:
+                target.write_text(content, encoding="utf-8")
+                out = f"已写入 {target}（{len(content)} 字符）"
 
         elif name == "edit":
             target = _resolve(workspace, args.get("path") or "", level)
