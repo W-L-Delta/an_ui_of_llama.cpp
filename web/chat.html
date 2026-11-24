@@ -1052,9 +1052,12 @@ function syncSkinCfg() {
       const j = await apiGet(state.settings.base + "/v1/models");
       const list = j.data || [];
       const sel = $("model");
-      loadedIds = new Set(list.map((m) => m.id));
-      // router 模式：多个模型共用端口，没有单一「家族」，皮肤回落默认
+      // router 模式下 status.value 才代表真的在显存里
       window.__routerMode = list.some((m) => m && m.status && typeof m.status === "object");
+      window.__presetIds = new Set(list.map((m) => m.id));
+      loadedIds = new Set(
+        list.filter((m) => !m.status || m.status.value === "loaded").map((m) => m.id)
+      );
       const keep = sel.value;
       sel.innerHTML = "";
       const seen = new Set();
@@ -1063,8 +1066,11 @@ function syncSkinCfg() {
         const o = document.createElement("option");
         o.value = c.id;
         const loaded = loadedIds.has(c.id);
-        o.textContent = (cfgNames[c.id] || c.id) + (loaded ? "" : "（未载入）");
-        o.title = loaded ? ("已载入：" + c.id) : ("未载入：" + c.id + " —— 需要先在控制台切换");
+        const onDemand = window.__routerMode && window.__presetIds && window.__presetIds.has(c.id);
+        o.textContent = (cfgNames[c.id] || c.id) + (loaded ? "" : onDemand ? "（按需加载）" : "（未载入）");
+        o.title = loaded ? ("已载入：" + c.id)
+          : onDemand ? ("在预设里，首次发消息时自动加载：" + c.id)
+          : ("未载入：" + c.id + " —— 需要先在控制台切换");
         o.dataset.loaded = loaded ? "1" : "0";
         seen.add(c.id);
         sel.appendChild(o);
@@ -2229,7 +2235,8 @@ function syncSkinCfg() {
     const next = e.target.value;
     const c = conv();
     const opt = e.target.options[e.target.selectedIndex];
-    if (opt && opt.dataset.loaded === "0" && !loadedIds.has(next)) {
+    const onDemand = window.__routerMode && window.__presetIds && window.__presetIds.has(next);
+    if (opt && opt.dataset.loaded === "0" && !loadedIds.has(next) && !onDemand) {
       // 还没载入：提示去控制台，切换本身不生效
       const go = await dialog({
         title: "这个模型还没载入",
@@ -2254,6 +2261,8 @@ function syncSkinCfg() {
       save();
       toast("AI 间对话：由 " + nameFor(next) + " 接手");
       setTimeout(() => startAiTurn(), 120);
+    } else if (onDemand && !loadedIds.has(next)) {
+      toast("已选 " + nameFor(next) + "：首次发消息时会自动加载（约 10 秒）");
     } else {
       toast("本会话模型：" + nameFor(next));
     }
