@@ -1052,12 +1052,28 @@ function syncSkinCfg() {
       const j = await apiGet(state.settings.base + "/v1/models");
       const list = j.data || [];
       const sel = $("model");
+      loadedIds = new Set(list.map((m) => m.id));
+      const keep = sel.value;
       sel.innerHTML = "";
-      list.forEach((m) => {
+      const seen = new Set();
+      // 先是所有配置过的模型（标注载入状态），再补上服务端额外暴露的
+      modelCatalog.forEach((c) => {
         const o = document.createElement("option");
-        o.value = m.id; o.textContent = m.id;
+        o.value = c.id;
+        const loaded = loadedIds.has(c.id);
+        o.textContent = (cfgNames[c.id] || c.id) + (loaded ? "" : "（未载入）");
+        o.title = loaded ? ("已载入：" + c.id) : ("未载入：" + c.id + " —— 需要先在控制台切换");
+        o.dataset.loaded = loaded ? "1" : "0";
+        seen.add(c.id);
         sel.appendChild(o);
       });
+      list.forEach((m) => {
+        if (seen.has(m.id)) return;
+        const o = document.createElement("option");
+        o.value = m.id; o.textContent = m.id; o.dataset.loaded = "1";
+        sel.appendChild(o);
+      });
+      if (keep) sel.value = keep;
       const c0 = conv();
       // 优先用「这个会话选中的模型」（右上角下拉的值），其次当前值，最后列表第一个
       const want = (c0 && c0.model) || modelId;
@@ -1108,6 +1124,8 @@ function syncSkinCfg() {
   let cfgVision = {};
   let cfgPrompt = {};
   let cfgNames = {};      // 模型 id → 控制台里设置的显示名
+  let modelCatalog = [];  // 所有配置过的模型：[{id, label}]，不区分是否已载入
+  let loadedIds = new Set(); // 服务端当前真的载入了哪些
   let chatCfg = { summarize: true, sum_threshold: 0.5, sum_keep: 4 };
   async function loadPanelDefaults() {
     try {
@@ -1122,6 +1140,14 @@ function syncSkinCfg() {
         if (m.display_name) names[m.alias] = m.display_name;
       });
       cfgMaxTok = map; cfgVision = vis; cfgPrompt = prompts; cfgNames = names;
+      // 收集所有配置过的模型，供下拉框列全（已载入/未载入）
+      const cat = [];
+      Object.keys(j.models || {}).forEach((k) => {
+        const m = j.models[k];
+        if (!m || !m.alias) return;
+        cat.push({ id: m.alias, label: m.label || m.alias, role: k, exists: !!m.exists });
+      });
+      modelCatalog = cat;
       if (j.chat) chatCfg = j.chat;
     } catch (e) {}
   }
@@ -2200,6 +2226,21 @@ function syncSkinCfg() {
   $("model").addEventListener("change", async (e) => {
     const next = e.target.value;
     const c = conv();
+    const opt = e.target.options[e.target.selectedIndex];
+    if (opt && opt.dataset.loaded === "0" && !loadedIds.has(next)) {
+      // 还没载入：提示去控制台，切换本身不生效
+      const go = await dialog({
+        title: "这个模型还没载入",
+        body: `<div class="dlg-tip">「${esc(nameFor(next))}」目前不在显存里，只有已载入的模型能直接切换。</div>
+               <div class="hintx">要使用它，需要打开控制台把当前模型切到它并重启服务（大约 20–40 秒，视模型大小而定）。</div>`,
+        ok: "打开控制台",
+        cancel: "取消",
+        danger: false,
+      });
+      if (go) openConsole();
+      e.target.value = c.model || modelId;
+      return;
+    }
     modelId = next;
     c.model = next;          // 绑定到本会话
     c.userPick = true;       // 这是用户主动选的，发送时才询问
@@ -2229,6 +2270,14 @@ function syncSkinCfg() {
     if (busy) { toast("等这轮结束再切换"); return; }
     if (!modelId) { await connect(); if (!modelId) return; }
     await send({ ai: true });
+  }
+
+  function openConsole() {
+    try {
+      const wv = window.chrome && window.chrome.webview;
+      if (wv) { wv.postMessage(JSON.stringify({ type: "open-console" })); return; }
+    } catch (e) {}
+    window.open("http://127.0.0.1:" + location.port + "/", "_blank");
   }
 
   function switchModeDlg(fromId, toId) {
@@ -2269,9 +2318,10 @@ function syncSkinCfg() {
     const text = $("input").value.trim();
     const hasAtt = pendingAtts.length > 0;
     if (!text && !hasAtt) return;
-    // 判据：用户在右上角下拉框里选过的模型，和上一条回答的模型是否不同
+    // 判据：下拉框当前值与上一条回答的模型是否不同
+    // （用户主动选择、或服务端重启导致下拉变化，都算；后者也是真实换模型）
     const picked = $("model").value || modelId;
-    if (c.userPick && c.messages.length && last && last !== picked) {
+    if (c.messages.length && last && last !== picked) {
       const choice = await switchModeDlg(last, picked);
       if (!choice) return;                 // 返回：保留输入，下次再问
       c.mode = choice === "ai" ? "ai" : "user";
