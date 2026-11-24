@@ -111,6 +111,11 @@
   .av.model{flex:0 0 66px;width:66px;padding:0 5px;font-size:9.5px;letter-spacing:.2px;
             font-family:ui-monospace,Consolas,monospace;white-space:nowrap;overflow:hidden;
             text-overflow:ellipsis;cursor:default}
+  .sm-opt{border:1px solid var(--line2);border-radius:10px;padding:10px 12px;margin-bottom:10px;
+          cursor:pointer;background:#101720;transition:border-color .15s,background .15s}
+  .sm-opt:hover{border-color:var(--accent);background:#141d29}
+  .sm-t{font-size:13px;font-weight:600;color:var(--text);margin-bottom:5px}
+  .sm-d{font-size:11.5px;color:var(--dim);line-height:1.6}
   .models-flyout{position:relative;font-size:11px;color:var(--dim);flex:0 0 auto}
   .models-flyout>summary{list-style:none;cursor:pointer;border:1px solid var(--line);border-radius:999px;
                          padding:2px 9px;background:#141b24;white-space:nowrap;display:flex;align-items:center;gap:5px}
@@ -325,6 +330,7 @@
       <h2 id="convTitle">新会话</h2>
       <span class="chip" id="chipFolder" title="点击修改工作区文件夹">—</span>
       <span class="chip" id="chipListing" title="是否把目录清单放进上下文">清单 关</span>
+      <span class="chip" id="chipMode" style="display:none" title="点击退出 AI 间对话">AI 对话中</span>
       <details class="models-flyout" id="modelsFlyout">
         <summary>参与本会话的模型</summary>
         <div class="mf-body"><div class="mf-title" id="mfTitle">—</div><div id="mfList"></div></div>
@@ -627,6 +633,7 @@ function syncSkinCfg() {
         id: c.id || uid(), title: c.title || "新会话", createdAt: c.createdAt || Date.now(), perm: c.perm || null,
   autoApprove: Array.isArray(c.autoApprove) ? c.autoApprove : [],
   model: c.model || "",
+  mode: c.mode === "ai" ? "ai" : "user",
   ctxUsed: Number(c.ctxUsed) || 0,
   summary: c.summary || "",
   summaryUpTo: Number(c.summaryUpTo) || 0,
@@ -871,6 +878,8 @@ function syncSkinCfg() {
     } else if (warn) {
       warn.style.display = "none";
     }
+    const modeChip = $("chipMode");
+    if (modeChip) modeChip.style.display = (c.mode === "ai") ? "" : "none";
     renderModelList();
   }
   // ---------------- 上下文占用环 ----------------
@@ -1058,6 +1067,17 @@ function syncSkinCfg() {
       $("dot").classList.add("on"); $("stat").textContent = "已连接";
       modelMisses = 0;
       if (typeof renderModelList === "function") renderModelList();   // 连上后才知道当前模型
+      // AI 间对话模式：控制台重启换了模型后，新模型自动接手（每个模型只触发一次）
+      try {
+        const c = conv();
+        const last = lastAssistantModel(c);
+        if (c.mode === "ai" && c.messages.length && last && last !== modelId
+            && c.aiTriggeredFor !== modelId && !busy) {
+          c.aiTriggeredFor = modelId;
+          save();
+          setTimeout(() => startAiTurn(), 400);
+        }
+      } catch (e) {}
     } catch (e) {
       $("dot").classList.remove("on"); $("stat").textContent = "未连接";
       modelMisses++;
@@ -1799,19 +1819,20 @@ function syncSkinCfg() {
     return { answer, reasoning, finishReason, usage, toolCalls: calls.filter(Boolean) };
   }
 
-  async function send() {
-    const text = $("input").value.trim();
-    const atts = pendingAtts.slice();
+  async function send(opts) {
+    const aiTurn = !!(opts && opts.ai);
+    const text = aiTurn ? "" : $("input").value.trim();
+    const atts = aiTurn ? [] : pendingAtts.slice();
     const imgs = atts.filter((a) => a.kind === "image");
     const txts = atts.filter((a) => a.kind === "text");
-    if ((!text && !atts.length) || busy) return;
+    if (busy) return;
+    if (!aiTurn && !text && !atts.length) return;
     if (!modelId) { await connect(); if (!modelId) return; }
     if (imgs.length && !visionOk()) {
       toast("当前模型不支持图片：先在控制台打开「视觉投影」并重启该模型");
       return;
     }
-    $("input").value = ""; autoGrow();
-    pendingAtts = []; renderAttach();
+    if (!aiTurn) { $("input").value = ""; autoGrow(); pendingAtts = []; renderAttach(); }
 
     let content = text;
     for (const a of txts) {
@@ -1820,13 +1841,15 @@ function syncSkinCfg() {
     }
 
     const convRef = conv();
-    const umsg = { role: "user", content: content };
-    if (imgs.length) umsg.images = imgs.map((x) => x.url);
-    if (txts.length) umsg.files = txts.map((a) => ({ name: a.name, chars: a.text.length }));
-    convRef.messages.push(umsg);
-    autoTitle(convRef, text || (txts[0] && txts[0].name) || "图片");
-    addRow("user", text, umsg.images, umsg.files);
-    if (convRef.messages.length === 1) renderChat();
+    if (!aiTurn) {
+      const umsg = { role: "user", content: content };
+      if (imgs.length) umsg.images = imgs.map((x) => x.url);
+      if (txts.length) umsg.files = txts.map((a) => ({ name: a.name, chars: a.text.length }));
+      convRef.messages.push(umsg);
+      autoTitle(convRef, text || (txts[0] && txts[0].name) || "图片");
+      addRow("user", text, umsg.images, umsg.files);
+      if (convRef.messages.length === 1) renderChat();
+    }
 
     if (!convRef.model && modelId) { convRef.model = modelId; save(); }
     let sys = "";
@@ -1847,6 +1870,14 @@ function syncSkinCfg() {
     try {
       const toolUse = { web_search: 0, web_fetch: 0 };
       const turnMsgs = [];   // 仅本轮请求使用，不写进会话、不显示
+      if (aiTurn) {
+        turnMsgs.push({
+          role: "system",
+          content: "【AI 间对话】现在由「" + (nameFor(modelId) || "你") + "」接手这个对话。"
+            + "请直接基于上面的上下文发言（评论、补充、追问、推进话题都可以），不要等用户提问，"
+            + "也不要重复别人刚说过的话。如果觉得话题该收了，就明确说一句你的结论。",
+        });
+      }
       const turnFiles = [];   // 本轮生成的文件，回答后显示气泡
       const WEB_SEARCH_CAP = 3;
       const WEB_FETCH_CAP = 4;
@@ -2086,7 +2117,7 @@ function syncSkinCfg() {
     // Ctrl/Cmd+Enter 发送
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
       e.preventDefault();
-      send();
+      trySend();
       return;
     }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
@@ -2147,7 +2178,7 @@ function syncSkinCfg() {
     e.preventDefault();
     await addFiles(e.dataTransfer.files);
   });
-  $("btnSend").addEventListener("click", send);
+  $("btnSend").addEventListener("click", trySend);
   $("btnStop").addEventListener("click", stopStream);
   $("input").addEventListener("keydown", (e) => {
     // Enter = 换行（方便写代码）；Ctrl/Cmd+Enter = 发送
@@ -2157,18 +2188,87 @@ function syncSkinCfg() {
   $("model").addEventListener("change", async (e) => {
     const next = e.target.value;
     const c = conv();
-    const prev = c.model || modelId;
-    if (c.model && next !== c.model && c.messages.length) {
-      const ok = await confirmDlg("切换模型",
-        `这个会话一直在用「${c.model}」，现在要换成「${next}」。\n\n同一会话混用不同模型，回答风格和上下文理解会不连续。确定切换吗？`);
-      if (!ok) { e.target.value = c.model; return; }
-    }
     modelId = next;
     c.model = next;          // 绑定到本会话
     save();
     renderHeader();
-    toast("本会话模型：" + next);
+    const last = lastAssistantModel(c);
+    if (c.mode === "ai" && c.messages.length && last && last !== next) {
+      c.aiTriggeredFor = next;
+      save();
+      toast("AI 间对话：由 " + nameFor(next) + " 接手");
+      setTimeout(() => startAiTurn(), 120);
+    } else {
+      toast("本会话模型：" + nameFor(next));
+    }
   });
+
+  // ---------------- 切换模型后的聊天方式 ----------------
+  function lastAssistantModel(c) {
+    const msgs = (c && c.messages) || [];
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === "assistant" && msgs[i].model) return msgs[i].model;
+    }
+    return "";
+  }
+
+  async function startAiTurn() {
+    if (busy) { toast("等这轮结束再切换"); return; }
+    if (!modelId) { await connect(); if (!modelId) return; }
+    await send({ ai: true });
+  }
+
+  function switchModeDlg(fromId, toId) {
+    return new Promise((resolve) => {
+      let chosen = null;
+      const body = `
+        <div class="dlg-tip" style="margin-bottom:12px">
+          上一条回答来自「<b>${esc(nameFor(fromId))}</b>」，你现在切到了「<b>${esc(nameFor(toId))}</b>」。接下来想怎么聊？
+        </div>
+        <div class="sm-opt" data-opt="user">
+          <div class="sm-t">单纯切换模型</div>
+          <div class="sm-d">你这句照样是你的发言，新模型直接回答你。两边各答各的，历史只是参考资料——适合偶尔换个模型试试。</div>
+        </div>
+        <div class="sm-opt" data-opt="ai">
+          <div class="sm-t">进行 AI 间对话</div>
+          <div class="sm-d">不用你再输入：新模型会基于当前语境直接接话，之后每次换模型都会自动接手发言。适合能在同一张卡上装下多个模型的机器；缺点是两边可能越聊越偏，需要你随时打断。</div>
+        </div>`;
+      dialog({
+        title: "切换模型后怎么聊？",
+        body,
+        ok: "开始",
+        cancel: "返回",
+        onOpen(b, close) {
+          const f = b.querySelector(".dlg-f");
+          if (f) f.style.display = "none";
+          b.querySelectorAll("[data-opt]").forEach((el) => {
+            el.onclick = () => { chosen = el.getAttribute("data-opt"); close(chosen); };
+          });
+        },
+      }).then((v) => resolve(typeof v === "string" ? v : chosen));
+    });
+  }
+
+  async function trySend() {
+    if (busy) return;
+    const c = conv();
+    const last = lastAssistantModel(c);
+    const text = $("input").value.trim();
+    const hasAtt = pendingAtts.length > 0;
+    if (!text && !hasAtt) return;
+    if (c.messages.length && last && last !== modelId) {
+      const choice = await switchModeDlg(last, modelId);
+      if (!choice) return;
+      c.mode = choice === "ai" ? "ai" : "user";
+      save(); renderHeader();
+      if (choice === "ai") {
+        if (text || hasAtt) await send();
+        else await startAiTurn();
+        return;
+      }
+    }
+    await send();
+  }
 
   $("wsNew").addEventListener("click", async () => {
     const box = await dialog({
@@ -2220,6 +2320,14 @@ function syncSkinCfg() {
     });
     if (!box) return;
     w.folder = box.path; save(); renderHeader(); toast("工作区路径已更新");
+  });
+
+  $("chipMode").addEventListener("click", () => {
+    const c = conv();
+    if (c.mode !== "ai") return;
+    c.mode = "user";
+    save(); renderHeader();
+    toast("已退出 AI 间对话，切回你自己发言");
   });
 
   $("chipListing").addEventListener("click", () => {
