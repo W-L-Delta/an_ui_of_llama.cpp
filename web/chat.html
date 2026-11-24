@@ -1265,6 +1265,13 @@ function syncSkinCfg() {
     if (people.length > 1) {
       const shown = people.map(nameFor);
       const mine = nameFor(modelId) || "当前模型";
+      const others = people.filter((id) => id !== modelId).map(nameFor).filter(Boolean);
+      // 身份锚点放最前面：DeepSeek-R1-8B 的底座是 Qwen3，容易自称成「千问」
+      parts.unshift(
+        "【身份】你叫「" + mine + "」（模型 id：" + modelId + "）。"
+        + (others.length ? "你不是「" + others.join("」「") + "」" : "你不是历史里出现的其他模型")
+        + "；被问「你是谁」时就用「" + mine + "」这个名字回答，不要报别人的名字。"
+      );
       parts.push([
         "【多模型会话】本会话由多个模型先后参与：" + shown.join("、") + "。",
         "你本轮对应的标注标识是「" + mine + "」——它只用来说明哪条回答出自谁，不代表你的身份，也不改变前面给你的角色设定。",
