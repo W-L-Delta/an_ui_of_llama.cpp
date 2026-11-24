@@ -62,6 +62,16 @@ SESS_FILE = DATA_DIR / "chat-sessions.json"
 FS_LIMIT = 400
 APP_EXE = ROOT / "chat-app" / "llama-chat.exe"
 SKIN_DIR = ROOT / "web" / "skins"
+VENDOR_DIR = ROOT / "web" / "vendor"
+VENDOR_MIME = {
+    ".css": "text/css; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+    ".woff2": "font/woff2",
+    ".woff": "font/woff",
+    ".ttf": "font/ttf",
+    ".svg": "image/svg+xml",
+    ".map": "application/json",
+}
 SKIN_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
              ".webp": "image/webp", ".svg": "image/svg+xml", ".json": "application/json",
              ".css": "text/css"}
@@ -105,6 +115,15 @@ def save_sessions(payload) -> int:
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
     os.replace(tmp, SESS_FILE)
     return SESS_FILE.stat().st_size
+
+def vendor_file(rel: str) -> Path:
+    """静态第三方资源（KaTeX 等）只允许落在 web/vendor 下。"""
+    base = VENDOR_DIR.resolve()
+    target = (base / rel.replace("/", os.sep)).resolve()
+    if not str(target).lower().startswith(str(base).lower()):
+        raise PermissionError("静态资源路径越界")
+    return target
+
 
 def skin_file(rel: str) -> Path:
     """皮肤资源只允许落在 web/skins 下。"""
@@ -1042,6 +1061,16 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(json.loads(target.read_text(encoding="utf-8")))
                 except ValueError as exc:
                     return self._error(f"skins.json 解析失败: {exc}", 500)
+            if path.startswith("/vendor/"):
+                rel = urllib.parse.unquote(path[len("/vendor/"):])
+                try:
+                    target = vendor_file(rel)
+                except PermissionError as exc:
+                    return self._error(str(exc), 403)
+                if not target.is_file():
+                    return self._error("not found", 404)
+                ctype = VENDOR_MIME.get(target.suffix.lower(), "application/octet-stream")
+                return self._send(200, target.read_bytes(), ctype)
             if path.startswith("/skins/"):
                 rel = urllib.parse.unquote(path[len("/skins/"):])
                 try:
