@@ -874,7 +874,7 @@ function syncSkinCfg() {
     box.innerHTML = "";
     const c = conv();
     if (!c.messages.length) {
-      box.innerHTML = '<div class="empty"><b>开始新的对话</b>本地模型不联网，回答只来自这台机器。</div>';
+      box.innerHTML = '<div class="empty"><b>开始新的对话</b></div>';
       return;
     }
     c.messages.forEach((m, i) => {
