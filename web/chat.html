@@ -927,6 +927,28 @@ function syncSkinCfg() {
     return cfgNames[t] || t;
   }
 
+  // 模型有时会把历史里的 [标识] 学过去，或把 </think> 漏进正文，这里清掉
+  function sanitizeAnswer(text) {
+    let t = String(text || "");
+    let guard = 0;
+    // 开头的 think 残片
+    while (guard++ < 4) {
+      const m = /^\s*<\/?think>\s*/i.exec(t);
+      if (!m) break;
+      t = t.slice(m[0].length);
+    }
+    // 开头模仿出来的 [模型名]（必须是本会话参与者，避免误删正文）
+    const names = participantsOf(conv()).map(nameFor).filter(Boolean);
+    guard = 0;
+    while (guard++ < 5) {
+      const m = /^\s*\[([^\]\n]{1,24})\]\s*\n?/.exec(t);
+      if (!m) break;
+      if (names.indexOf(m[1].trim()) < 0) break;
+      t = t.slice(m[0].length);
+    }
+    return t.replace(/^\s+/, "");
+  }
+
   // 头像上显示模型短名（长名截断，悬停看全称）
   function shortModel(m) {
     const t = nameFor(m);
@@ -1246,7 +1268,9 @@ function syncSkinCfg() {
       parts.push([
         "【多模型会话】本会话由多个模型先后参与：" + shown.join("、") + "。",
         "你本轮对应的标注标识是「" + mine + "」——它只用来说明哪条回答出自谁，不代表你的身份，也不改变前面给你的角色设定。",
-        "历史消息里每条助手回答前的 [标识] 是出处，不是你写的；不要模仿它的口吻，也不要重复它的内容。",
+        "历史消息里每条助手回答前的 [标识] 是出处，都不是你写的；不要模仿它的口吻，也不要重复它的内容。",
+        "不要在自己的回答里输出 [标识] 这样的前缀，那是历史的标注格式，不是你要写的东西。",
+        "被别人问「你是谁」时，按你自己的身份和前面的设定回答，不要自称成历史里其他模型的名字。",
         "可以直接引用、补充或纠正其他模型的说法；需要区分时，用「刚才那个模型说的是…」。",
       ].join("\n"));
     }
@@ -1868,7 +1892,8 @@ function syncSkinCfg() {
         }
       }
     }
-    // 流式结束：整段重绘一次，公式与 Markdown 才排版
+    // 流式结束：先清掉漏出来的标签/前缀，再整段重绘（公式与 Markdown 才排版）
+    answer = sanitizeAnswer(answer);
     if (reasoning || answer) {
       bub.innerHTML = (reasoning ? buildThink(reasoning) : "") + md(answer);
     }
@@ -1931,7 +1956,9 @@ function syncSkinCfg() {
           role: "system",
           content: "【AI 间对话】现在由「" + (nameFor(modelId) || "你") + "」接手这个对话。"
             + "请直接基于上面的上下文发言（评论、补充、追问、推进话题都可以），不要等用户提问，"
-            + "也不要重复别人刚说过的话。如果觉得话题该收了，就明确说一句你的结论。",
+            + "也不要重复别人刚说过的话，不要在回答开头写 [名字] 前缀。"
+            + "你不是历史里那些名字的主人，用你自己的身份说话。"
+            + "如果觉得话题该收了，就明确说一句你的结论。",
         });
       }
       const turnFiles = [];   // 本轮生成的文件，回答后显示气泡
