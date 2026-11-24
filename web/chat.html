@@ -51,7 +51,7 @@
 
   main{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0}
   .top{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--line);
-       background:var(--panel2)}
+       background:var(--panel2);position:relative;z-index:30}
   .top h2{font-size:13.5px;margin:0;font-weight:600;flex:0 1 auto;min-width:0;max-width:30vw;
           overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .chip{display:inline-flex;align-items:center;gap:5px;font:11px/1.4 ui-monospace,Consolas,monospace;
@@ -108,6 +108,26 @@
   .av{flex:0 0 26px;height:26px;border-radius:7px;display:flex;align-items:center;justify-content:center;
       font-size:11.5px;background:#1a2331;color:var(--dim);margin-top:2px}
   .row.user .av{background:var(--accent-soft);color:#a9c8ff}
+  .av.model{flex:0 0 66px;width:66px;padding:0 5px;font-size:9.5px;letter-spacing:.2px;
+            font-family:ui-monospace,Consolas,monospace;white-space:nowrap;overflow:hidden;
+            text-overflow:ellipsis;cursor:default}
+  .models-flyout{position:relative;font-size:11px;color:var(--dim);flex:0 0 auto}
+  .models-flyout>summary{list-style:none;cursor:pointer;border:1px solid var(--line);border-radius:999px;
+                         padding:2px 9px;background:#141b24;white-space:nowrap;display:flex;align-items:center;gap:5px}
+  .models-flyout>summary::-webkit-details-marker{display:none}
+  .models-flyout>summary:hover{color:var(--text);border-color:var(--line2)}
+  .models-flyout[open]>summary{color:var(--accent);border-color:var(--accent)}
+  .mf-body{position:absolute;top:28px;left:0;z-index:40;min-width:220px;max-width:300px;
+           background:var(--panel2);border:1px solid var(--line2);border-radius:10px;padding:8px;
+           box-shadow:0 12px 30px rgba(0,0,0,.5)}
+  .mf-title{font-size:10.5px;color:var(--dim2);padding:0 6px 6px}
+  .mf-row{display:flex;align-items:center;gap:8px;padding:5px 6px;border-radius:6px;white-space:nowrap}
+  .mf-row:hover{background:#16202c}
+  .mf-name{font-family:ui-monospace,Consolas,monospace;color:var(--text);max-width:180px;
+           overflow:hidden;text-overflow:ellipsis}
+  .mf-cnt{color:var(--dim2);font-size:10.5px}
+  .mf-cur{margin-left:auto;font-size:10px;color:var(--accent);border:1px solid var(--accent);
+          border-radius:999px;padding:0 6px}
   .bub{padding:10px 13px;border-radius:10px;max-width:min(680px,78%);overflow-wrap:anywhere;
        background:var(--panel);border:1px solid var(--line)}
   .row.user .bub{background:var(--user-bg);border-color:var(--user-line);border-bottom-right-radius:3px}
@@ -305,6 +325,10 @@
       <h2 id="convTitle">新会话</h2>
       <span class="chip" id="chipFolder" title="点击修改工作区文件夹">—</span>
       <span class="chip" id="chipListing" title="是否把目录清单放进上下文">清单 关</span>
+      <details class="models-flyout" id="modelsFlyout">
+        <summary>参与本会话的模型</summary>
+        <div class="mf-body"><div class="mf-title" id="mfTitle">—</div><div id="mfList"></div></div>
+      </details>
       <div class="spacer"></div>
       <span class="status"><span class="dot" id="dot"></span><span id="stat">连接中…</span></span>
       <span class="model-warn" id="modelWarn" style="display:none" title="">≠ 本会话原模型</span>
@@ -796,6 +820,29 @@ function syncSkinCfg() {
     '<path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l1.8 2.2h7.2A1.5 1.5 0 0 1 19 9.7v7.8A1.5 1.5 0 0 1 17.5 19h-13A1.5 1.5 0 0 1 3 17.5z"/>' +
     '</svg>';
 
+  function renderModelList() {
+    const box = $("mfList"), title = $("mfTitle");
+    if (!box) return;
+    const c = conv();
+    const counts = new Map();
+    (c.messages || []).forEach((m) => {
+      if (m.role !== "assistant") return;
+      const k = m.model || c.model || "（未记录）";
+      counts.set(k, (counts.get(k) || 0) + 1);
+    });
+    if (modelId && !counts.has(modelId)) counts.set(modelId, 0);
+    if (c.model && !counts.has(c.model)) counts.set(c.model, 0);
+    const rows = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+    title.textContent = rows.length ? ("共 " + rows.length + " 个模型参与过") : "还没有对话";
+    box.innerHTML = rows.map(([name, cnt]) => {
+      const cur = name === modelId ? '<span class="mf-cur">当前</span>' : "";
+      const n = cnt ? (cnt + " 条回答") : "未使用";
+      return '<div class="mf-row" title="' + esc(name) + '">'
+        + '<span class="mf-name">' + esc(name) + "</span>"
+        + '<span class="mf-cnt">' + n + "</span>" + cur + "</div>";
+    }).join("") || '<div class="mf-row"><span class="mf-cnt">这个会话还没有模型回答</span></div>';
+  }
+
   function renderHeader() {
     const w = ws(), c = conv();
     $("convTitle").textContent = c.title || "新会话";
@@ -823,6 +870,7 @@ function syncSkinCfg() {
     } else if (warn) {
       warn.style.display = "none";
     }
+    renderModelList();
   }
   // ---------------- 上下文占用环 ----------------
   let ctxLimit = 0;
@@ -860,10 +908,20 @@ function syncSkinCfg() {
     setCtx(c && c.ctxUsed ? c.ctxUsed : estimateTokens(c));
   }
 
-  function addRow(role, text, images, files, reasoning) {
+  // 头像上显示模型短名（长名截断，悬停看全称）
+  function shortModel(m) {
+    const t = String(m || "").trim();
+    if (!t) return "AI";
+    return t.length > 16 ? t.slice(0, 15) + "…" : t;
+  }
+
+  function addRow(role, text, images, files, reasoning, model) {
     const row = document.createElement("div");
     row.className = "row " + role;
-    row.innerHTML = '<div class="av">' + (role === "user" ? "我" : "AI") + '</div><div class="bub"></div>';
+    const isUser = role === "user";
+    const label = isUser ? "我" : shortModel(model);
+    row.innerHTML = '<div class="av' + (isUser ? "" : " model") + '" title="'
+      + esc(isUser ? "我" : (model || "AI")) + '">' + esc(label) + '</div><div class="bub"></div>';
     const bub = row.querySelector(".bub");
     bub.innerHTML = md(text || "");
     // 思考过程：只用于显示，绝不回传给模型（见 toApiMessage）
@@ -931,7 +989,7 @@ function syncSkinCfg() {
       if (m.role === "tool" || m.role === "system") return;
       const hasText = !!(m.content && m.content.trim());
       const bub = (m.tool_calls && !hasText && !m.reasoning)
-        ? null : addRow(m.role, m.content, m.images, m.files, m.reasoning);
+        ? null : addRow(m.role, m.content, m.images, m.files, m.reasoning, m.model || c.model || "");
       if (m.role === "assistant" && Array.isArray(m.created)) m.created.forEach((f) => renderFilePill($("thread"), f));
       if (m.tool_calls) {
         m.tool_calls.forEach((tc) => {
@@ -966,6 +1024,7 @@ function syncSkinCfg() {
       refreshCtx();
       $("dot").classList.add("on"); $("stat").textContent = "已连接";
       modelMisses = 0;
+      if (typeof renderModelList === "function") renderModelList();   // 连上后才知道当前模型
     } catch (e) {
       $("dot").classList.remove("on"); $("stat").textContent = "未连接";
       modelMisses++;
@@ -1763,13 +1822,13 @@ function syncSkinCfg() {
         const msgs = sysParts
           .concat(turnMsgs)
           .concat(convRef.messages.map(toApiMessage));
-        const bub = addRow("assistant", "");
+        const bub = addRow("assistant", "", null, null, null, modelId);
         const rowEl = bub.closest(".row");
         const res = await streamRound(msgs, bub, roundTools);
 
         if (res.toolCalls.length) {
           const asstMsg = { role: "assistant", content: res.answer || "", tool_calls: res.toolCalls,
-                            reasoning: capReasoning(res.reasoning) };
+                            reasoning: capReasoning(res.reasoning), model: modelId };
           convRef.messages.push(asstMsg);
           save();
           for (const tc of res.toolCalls) {
@@ -1818,7 +1877,7 @@ function syncSkinCfg() {
           warn.textContent = "⚠ 达到 max_tokens 上限被截断（当前 " + maxtokFor(modelId) + "），可在设置里调大";
           bub.appendChild(warn);
         }
-        const finalMsg = { role: "assistant", content: res.answer };
+        const finalMsg = { role: "assistant", content: res.answer, model: modelId };
         if (res.reasoning) finalMsg.reasoning = capReasoning(res.reasoning);
         if (turnFiles.length) finalMsg.created = turnFiles;
         convRef.messages.push(finalMsg);
@@ -2185,6 +2244,11 @@ function syncSkinCfg() {
     const p = await pickFolder($("sWsFolder").value.trim());
     if (p) $("sWsFolder").value = p;
   };
+  document.addEventListener("click", (e) => {
+    const fly = $("modelsFlyout");
+    if (fly && fly.open && !fly.contains(e.target)) fly.open = false;
+  });
+
   $("openSettings").addEventListener("click", () => { fillSettings(); setMask.style.display = "flex"; });
 
   $("btnOpenConsole").addEventListener("click", () => {
