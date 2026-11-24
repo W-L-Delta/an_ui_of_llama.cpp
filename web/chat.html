@@ -634,6 +634,7 @@ function syncSkinCfg() {
   autoApprove: Array.isArray(c.autoApprove) ? c.autoApprove : [],
   model: c.model || "",
   mode: c.mode === "ai" ? "ai" : "user",
+  userPick: !!c.userPick,     // 用户是否在右上角下拉框里主动选过模型
   ctxUsed: Number(c.ctxUsed) || 0,
   summary: c.summary || "",
   summaryUpTo: Number(c.summaryUpTo) || 0,
@@ -1057,8 +1058,18 @@ function syncSkinCfg() {
         o.value = m.id; o.textContent = m.id;
         sel.appendChild(o);
       });
-      const cur = list.find((m) => m.id === modelId) || list[0] || {};
+      const c0 = conv();
+      // 优先用「这个会话选中的模型」（右上角下拉的值），其次当前值，最后列表第一个
+      const want = (c0 && c0.model) || modelId;
+      const cur = list.find((m) => m.id === want) || list[0] || {};
+      const adopted = !!(c0 && c0.model && cur.id && cur.id !== c0.model);
       modelId = cur.id || "";
+      if (adopted) {
+        // 服务端已经不忍这个模型（重启换了），静默跟随，不当成用户切换
+        c0.model = modelId;
+        c0.userPick = false;
+        save();
+      }
       window.__modelHints = list.map((m) => m.id).concat([modelId]).filter(Boolean);
       if (modelId) sel.value = modelId;
       const ctx = (cur.meta || {}).n_ctx;
@@ -1074,6 +1085,7 @@ function syncSkinCfg() {
         if (c.mode === "ai" && c.messages.length && last && last !== modelId
             && c.aiTriggeredFor !== modelId && !busy) {
           c.aiTriggeredFor = modelId;
+          c.userPick = false;
           save();
           setTimeout(() => startAiTurn(), 400);
         }
@@ -2190,6 +2202,7 @@ function syncSkinCfg() {
     const c = conv();
     modelId = next;
     c.model = next;          // 绑定到本会话
+    c.userPick = true;       // 这是用户主动选的，发送时才询问
     save();
     renderHeader();
     const last = lastAssistantModel(c);
@@ -2256,16 +2269,24 @@ function syncSkinCfg() {
     const text = $("input").value.trim();
     const hasAtt = pendingAtts.length > 0;
     if (!text && !hasAtt) return;
-    if (c.messages.length && last && last !== modelId) {
-      const choice = await switchModeDlg(last, modelId);
-      if (!choice) return;
+    // 判据：用户在右上角下拉框里选过的模型，和上一条回答的模型是否不同
+    const picked = $("model").value || modelId;
+    if (c.userPick && c.messages.length && last && last !== picked) {
+      const choice = await switchModeDlg(last, picked);
+      if (!choice) return;                 // 返回：保留输入，下次再问
       c.mode = choice === "ai" ? "ai" : "user";
+      c.model = picked;
+      c.userPick = false;
+      modelId = picked;
       save(); renderHeader();
       if (choice === "ai") {
         if (text || hasAtt) await send();
         else await startAiTurn();
         return;
       }
+    } else {
+      c.model = picked;
+      c.userPick = false;
     }
     await send();
   }
