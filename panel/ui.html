@@ -312,7 +312,7 @@
   <section class="card" id="modelsCard">
     <div class="card-head">
       <h2>加载的模型</h2>
-      <span class="hint">同一时刻只能常驻一个模型</span>
+      <span class="hint" id="cardHint">同一时刻只能常驻一个模型</span>
     </div>
     <div class="models" id="modelList"></div>
   </section>
@@ -752,6 +752,12 @@
           + '><span class="hint">' + esc(mm.display_name || mm.alias) + "</span>";
         box.appendChild(lab);
       });
+    }
+    const cardHint = $("#cardHint");
+    if (cardHint) {
+      cardHint.textContent = rt.enabled
+        ? ("多模型：" + (rt.roles || []).length + " 个预设，最多 " + (rt.models_max || 2) + " 个同时驻留")
+        : "同一时刻只能常驻一个模型";
     }
     $("#routerHint").textContent = rt.enabled
       ? ("已启用：" + (rt.roles || []).join("、") + "，上限 " + (rt.models_max || 2))
