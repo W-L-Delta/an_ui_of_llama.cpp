@@ -12,6 +12,7 @@
 import fcntl
 import os
 import sys
+import time
 import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -90,6 +91,15 @@ def main():
             log("错误：找不到 WebKit2")
             return 2
 
+        # 关掉 WebKit 的页面缓存，避免面板更新了页面却仍显示旧版
+        try:
+            ctx = WebKit.WebContext.get_default()
+            ctx.set_cache_model(WebKit.CacheModel.DOCUMENT_VIEWER)
+            settings = WebKit.Settings.get_default()
+            settings.set_enable_page_cache(False)
+        except Exception as e:
+            log("关闭页面缓存失败（忽略）: %r" % (e,))
+
         GLib.set_prgname(WMCLASS)
         GLib.set_application_name(TITLE)
 
@@ -146,7 +156,7 @@ def main():
             return v
 
         chat = make_view()
-        chat.load_uri(CHAT_URL)
+        chat.load_uri(CHAT_URL + "?t=" + str(int(time.time())))
         console = make_view()
         console_state = {"loaded": False}
 

@@ -1661,6 +1661,16 @@ class Handler(BaseHTTPRequestHandler):
                 local_tools.set_web_config(web_cfg(parse_conf()))
                 local_tools.clear_search_cache()
                 return self._json(web_cfg(parse_conf()))
+            if path == "/api/debug/log":
+                msg = str(payload.get("msg") or "")[:2000]
+                try:
+                    dbg = DATA_DIR / "ui-debug.log"
+                    DATA_DIR.mkdir(parents=True, exist_ok=True)
+                    with dbg.open("a", encoding="utf-8") as fh:
+                        fh.write(time.strftime("%H:%M:%S ") + msg + "\n")
+                except OSError:
+                    pass
+                return self._json({"ok": True})
             if path == "/api/model-name":
                 role = str(payload.get("role") or "").strip().lower()
                 try:
