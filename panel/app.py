@@ -309,6 +309,44 @@ def pid_alive(pid: int) -> bool:
     finally:
         ctypes.windll.kernel32.CloseHandle(handle)
 
+ROLE_ARG_MAP = {"-base": "base", "--base": "base",
+                "-qwen36": "qwen36", "--qwen36": "qwen36",
+                "-deepseek": "deepseek", "--deepseek": "deepseek"}
+
+
+def conf_set_active(role: str) -> None:
+    """把 [models] active 写成指定角色（Linux 走 systemd 时由 Python 自己写）。"""
+    role = (role or "").lower()
+    if role not in ("base", "qwen36", "deepseek"):
+        return
+    update_conf({"models": {"active": role}})
+
+
+def control_cmd(action: str, role: str = "") -> list:
+    """返回「启动/停止/重启/切换」要执行的命令。
+
+    Windows：交给 start-llama.ps1（行为与以前完全一致）。
+    Linux：服务由 systemd 管理，这里只调用 systemctl；
+           切换模型先改配置里的 [models] active，再 restart。
+           需要在 /etc/sudoers.d 里给这几个 systemctl 动词放行（20 脚本会装）。
+    """
+    if IS_WIN:
+        if action == "switch" and role:
+            return launcher_cmd([ROLE_SWITCH[role]])
+        if action == "restart":
+            return launcher_cmd([])
+        if action == "stop":
+            return launcher_cmd(["-Stop"])
+        if action == "start":
+            return launcher_cmd(["-EnsureRunning"])
+        return launcher_cmd([])
+
+    verb = {"switch": "restart", "restart": "restart", "start": "start", "stop": "stop"}[action]
+    if action == "switch" and role:
+        conf_set_active(role)
+    return ["sudo", "-n", "systemctl", verb, "llama-server"]
+
+
 def launcher_cmd(args) -> list:
     """跨平台调用启动脚本：Windows 走 PowerShell，Linux 走 bash。"""
     if IS_WIN:
@@ -1187,7 +1225,21 @@ class JobRunner:
                 del self.output[:100]
 
     def _run(self, args: list[str]) -> None:
-        command = launcher_cmd(args)
+        role = ""
+        for a in args:
+            if a.lower() in ROLE_ARG_MAP:
+                role = ROLE_ARG_MAP[a.lower()]
+                break
+        if self.kind == "apply":
+            command = control_cmd("switch", role)
+            self._append(f"[panel] 切换模型 -> {role or '(未指定)'}")
+        elif self.kind == "restart":
+            command = control_cmd("restart")
+        elif self.kind == "stop":
+            command = control_cmd("stop")
+        else:
+            command = control_cmd("start")
+        self._append("[panel] 执行: " + " ".join(command))
         # 输出重定向到文件而不是管道：llama-server 是 Start-Process 拉起的
         # 孙进程，会继承 stdout 句柄，用 PIPE 时父进程退出后 read() 永远等不到
         # EOF（实测任务卡死 3 分钟以上）。文件轮询没有这个继承问题。
@@ -1597,8 +1649,15 @@ class Handler(BaseHTTPRequestHandler):
                 JOB.start("restart", [])
                 return self._json({"ok": True, "job": JOB.snapshot()}, 202)
             if path == "/api/stop":
-                code, text = run_script_blocking(["-Stop"], timeout=60)
-                return self._json({"ok": code == 0, "output": text, "code": code})
+                command = control_cmd("stop")
+                try:
+                    done = subprocess.run(command, capture_output=True, timeout=90,
+                                          creationflags=CREATE_NO_WINDOW)
+                    text = (decode_bytes(done.stdout) + decode_bytes(done.stderr)).strip()
+                    return self._json({"ok": done.returncode == 0, "output": text,
+                                       "code": done.returncode})
+                except Exception as exc:  # noqa: BLE001
+                    return self._json({"ok": False, "output": str(exc), "code": 1})
             if path == "/api/test":
                 return self._test(payload)
             if path == "/api/keepalive":
