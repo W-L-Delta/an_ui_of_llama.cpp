@@ -716,13 +716,34 @@ def scan_models(values: dict) -> dict:
                 configured[str(resolve_path(mm_rel).resolve()).lower()] = role + ":mmproj"
             except Exception:  # noqa: BLE001
                 pass
-    files = []
+    # 除了 ROOT/models，还要扫「配置里引用的模型所在目录」
+    # Linux 上模型常常放在 Windows 盘的挂载点里，不在 ROOT 下
+    scan_dirs = []
     if models_dir.is_dir():
-        for item in sorted(models_dir.rglob("*.gguf"), key=lambda x: str(x).lower()):
+        scan_dirs.append(models_dir)
+    for _role in ROLE_FILE_KEY:
+        _rel = cfg_get(values, "model", ROLE_FILE_KEY[_role], "")
+        if not _rel:
+            continue
+        try:
+            _p = resolve_path(_rel)
+        except Exception:  # noqa: BLE001
+            continue
+        if _p.parent.is_dir() and _p.parent not in scan_dirs:
+            scan_dirs.append(_p.parent)
+
+    files = []
+    seen_paths = set()
+    for scan_dir in scan_dirs:
+        for item in sorted(scan_dir.rglob("*.gguf"), key=lambda x: str(x).lower()):
+            _key = str(item.resolve()).lower()
+            if _key in seen_paths:
+                continue
+            seen_paths.add(_key)
             try:
                 rel = str(item.relative_to(ROOT)).replace("\\", "/")
             except ValueError:
-                rel = item.name
+                rel = str(item)
             low = item.name.lower()
             is_mm = ("mmproj" in low) or ("projector" in low) or (".mmproj." in low)
             files.append({
