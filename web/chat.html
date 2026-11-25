@@ -1468,6 +1468,32 @@ function syncSkinCfg() {
 
   const TEXT_EXT = /\.(txt|md|markdown|json|jsonl|csv|tsv|log|ini|conf|cfg|yaml|yml|toml|xml|html|css|js|ts|jsx|tsx|py|ps1|sh|bat|cmd|c|h|cpp|hpp|java|go|rs|sql|properties)$/i;
 
+  // 从 file:// URI 或纯路径里取出本地图片路径
+  function localImagePath(raw) {
+    let t = String(raw || "").trim();
+    if (!t) return "";
+    t = t.split(/\r?\n/)[0].trim();
+    if (t.startsWith("file://")) {
+      try { t = decodeURIComponent(t.slice(7)); } catch (e) { t = t.slice(7); }
+    }
+    if (!t.startsWith("/")) return "";
+    return /\.(png|jpe?g|webp|gif|bmp)$/i.test(t) ? t : "";
+  }
+
+  // 浏览器读不了 file://，交给面板代读成 data URL
+  async function attachFromPath(path) {
+    try {
+      const r = await fetch("/api/fs/attach?path=" + encodeURIComponent(path));
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+      pendingAtts.push({ kind: "image", url: j.url, name: j.name });
+      renderAttach();
+      toast("已附加图片：" + j.name);
+    } catch (err) {
+      toast("读取图片失败：" + err.message);
+    }
+  }
+
   async function addFiles(files) {
     const list = Array.from(files || []);
     if (!list.length) return;
@@ -2262,11 +2288,14 @@ function syncSkinCfg() {
     if (!files.length && cd.files && cd.files.length) {
       files = Array.from(cd.files).filter((f) => (f.type || "").startsWith("image/"));
     }
-    // 有些平台只给 text/uri-list（file://…），当作图片文件读进来
+    // 有些平台只给 file:// 路径（在文件管理器里复制文件就属于这种）
     if (!files.length) {
-      const uri = (cd.getData && cd.getData("text/uri-list")) || "";
-      if (/^file:\/\//.test(uri.trim())) {
-        toast("该平台不允许直接读取文件，请用「＋」按钮选择图片");
+      const uri = (cd.getData && (cd.getData("text/uri-list") || cd.getData("text/plain"))) || "";
+      const path = localImagePath(uri);
+      if (path) {
+        e.preventDefault();
+        await attachFromPath(path);
+        return;
       }
     }
     if (files.length) { e.preventDefault(); await addFiles(files); return; }
@@ -2287,10 +2316,21 @@ function syncSkinCfg() {
     document.addEventListener(ev, (e) => { if (hasFiles(e.dataTransfer)) e.preventDefault(); }, true);
   });
   document.addEventListener("drop", async (e) => {
-    if (!hasFiles(e.dataTransfer)) return;
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.dataTransfer.files && e.dataTransfer.files.length) await addFiles(e.dataTransfer.files);
+    const dt = e.dataTransfer;
+    if (!dt) return;
+    if (dt.files && dt.files.length) {
+      e.preventDefault();
+      e.stopPropagation();
+      await addFiles(dt.files);
+      return;
+    }
+    const uri = (dt.getData && (dt.getData("text/uri-list") || dt.getData("text/plain"))) || "";
+    const path = localImagePath(uri);
+    if (path) {
+      e.preventDefault();
+      e.stopPropagation();
+      await attachFromPath(path);
+    }
   }, true);
   $("btnSend").addEventListener("click", trySend);
   $("btnStop").addEventListener("click", stopStream);

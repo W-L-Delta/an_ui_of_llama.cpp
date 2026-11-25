@@ -158,8 +158,11 @@ build_args() {
   if [ "$(gv vision enabled false)" = "true" ]; then
     mmproj="$(gvr "$section" model mmproj '')"
     if [ -n "$mmproj" ]; then
-      case "$mmproj" in /*) : ;; *) mmproj="$ROOT/$mmproj" ;; esac
-      [ -f "$mmproj" ] && ARGS+=(--mmproj "$mmproj") || warn "视觉投影文件不存在：$mmproj"
+      if resolved="$(resolve_model "$mmproj")"; then
+        ARGS+=(--mmproj "$resolved")
+      else
+        warn "视觉投影文件不存在：$mmproj（已尝试多种路径）"
+      fi
     fi
   fi
 
