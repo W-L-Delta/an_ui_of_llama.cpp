@@ -136,6 +136,7 @@ def main():
 
         nb = Gtk.Notebook()
         nb.set_tab_pos(Gtk.PositionType.TOP)
+        nb.set_show_tabs(False)   # 用顶部的「聊天 / 控制台」按钮切换，标签栏省掉
         nb.append_page(chat, Gtk.Label(label="聊天"))
         nb.append_page(console, Gtk.Label(label="控制台"))
 

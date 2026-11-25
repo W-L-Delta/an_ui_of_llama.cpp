@@ -2538,6 +2538,11 @@ function syncSkinCfg() {
 
   $("openSettings").addEventListener("click", () => { fillSettings(); setMask.style.display = "flex"; });
 
+  // Linux 独立窗口有自己的「聊天 / 控制台」标签，这里入口重复，直接隐藏
+  if (!(window.chrome && window.chrome.webview)) {
+    const oc = $("btnOpenConsole");
+    if (oc && oc.parentElement) oc.parentElement.style.display = "none";
+  }
   $("btnOpenConsole").addEventListener("click", () => {
     const wv = window.chrome && window.chrome.webview;
     if (wv) { wv.postMessage(JSON.stringify({ type: "open-console" })); return; }

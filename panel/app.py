@@ -129,7 +129,7 @@ def vendor_file(rel: str) -> Path:
 def skin_file(rel: str) -> Path:
     """皮肤资源只允许落在 web/skins 下。"""
     base = SKIN_DIR.resolve()
-    target = (base / rel.replace("/", "\\")).resolve()
+    target = (base / rel.replace("/", os.sep)).resolve()
     if not str(target).lower().startswith(str(base).lower()):
         raise PermissionError("皮肤路径越界")
     return target
@@ -630,9 +630,9 @@ if ($i.NextRunTime -and $i.NextRunTime.Year -gt 2000) { $next = $i.NextRunTime.T
 
 def keepalive_state_linux() -> dict:
     try:
-        en = subprocess.run(["systemctl", "--user", "is-enabled", "llama-server"],
+        en = subprocess.run(["systemctl", "is-enabled", "llama-server"],
                             capture_output=True, timeout=8)
-        ac = subprocess.run(["systemctl", "--user", "is-active", "llama-server"],
+        ac = subprocess.run(["systemctl", "is-active", "llama-server"],
                             capture_output=True, timeout=8)
         return {
             "exists": True,
@@ -646,12 +646,15 @@ def keepalive_state_linux() -> dict:
 
 def set_keepalive(enabled: bool) -> dict:
     if not IS_WIN:
-        try:
-            subprocess.run(["systemctl", "--user", "enable" if enabled else "disable", "llama-server"],
-                           capture_output=True, timeout=20)
-        except Exception:
-            pass
-        return keepalive_state(force=True)
+        # 服务是系统级 systemd 单元（/etc/systemd/system），普通用户改不了，
+        # 也不该由面板去改，这里只回报只读状态，界面上把开关置灰。
+        st = keepalive_state_linux()
+        return {
+            "exists": True,
+            "enabled": bool(st.get("enabled")),
+            "readonly": True,
+            "note": "Linux 下由 systemd 管理：sudo systemctl enable/disable llama-server",
+        }
 
     action = "/ENABLE" if enabled else "/DISABLE"
     ok = False
@@ -671,6 +674,7 @@ def set_keepalive(enabled: bool) -> dict:
         ok = False
         output = (output + "\n任务状态未按预期变化").strip()
     return {"ok": ok, "output": output, "state": state}
+
 
 def last_eval():
     text = tail_text(LOGS / "llama-server.err.log")
