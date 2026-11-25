@@ -758,6 +758,7 @@
     $("#routerOn").checked = !!rt.enabled;
     $("#routerLbl").textContent = rt.enabled ? "开启" : "关闭";
     $("#routerMax").value = rt.models_max || 2;
+    if (typeof syncRouterBtn === "function") syncRouterBtn();
     {
       const sel = new Set(rt.roles || []);
       const box = $("#routerRoles");
@@ -913,9 +914,12 @@
       if (revertEl) revertEl();
     }
   }
-  $("#routerOn").addEventListener("change", () => {
-    $("#routerLbl").textContent = $("#routerOn").checked ? "开启" : "关闭";
-  });
+  function syncRouterBtn() {
+    const on = $("#routerOn").checked;
+    $("#routerLbl").textContent = on ? "开启" : "关闭";
+    $("#routerSave").textContent = on ? "保存并重启为多模型" : "保存并重启为单模型";
+  }
+  $("#routerOn").addEventListener("change", syncRouterBtn);
   $("#routerSave").addEventListener("click", async () => {
     const roles = [];
     Object.keys(state.data.models || {}).forEach((role) => {
@@ -935,16 +939,14 @@
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
       state.data.router = j;
-      if (j.enabled) {
-        const rr = await fetch("/api/restart", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-        if (!rr.ok) throw new Error("重启失败 HTTP " + rr.status);
-        $("#routerHint").style.color = "";
-        $("#routerHint").textContent = "已切换为多模型模式，正在重启（首次请求会按需加载）";
-      } else {
-        $("#routerHint").style.color = "";
-        $("#routerHint").textContent = "已关闭多模型模式（重启后生效）";
-      }
-      setTimeout(() => location.reload(), 2200);
+      // 开、关都要重启，否则运行中的服务不会切换模式
+      const rr = await fetch("/api/restart", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      if (!rr.ok) throw new Error("重启失败 HTTP " + rr.status);
+      $("#routerHint").style.color = "";
+      $("#routerHint").textContent = j.enabled
+        ? "已切换为多模型模式，正在重启（首次请求会按需加载）"
+        : "已关闭多模型，正在重启为单模型（按 [model] + 活跃模型启动）";
+      setTimeout(() => location.reload(), 2600);
     } catch (e) {
       $("#routerHint").style.color = "var(--red)";
       $("#routerHint").textContent = "失败：" + e.message;
