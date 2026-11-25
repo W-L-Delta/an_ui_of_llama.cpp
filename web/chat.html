@@ -587,9 +587,11 @@ function syncSkinCfg() {
               (j.roots || []).forEach((r) => rows.push({ label: r, go: r }));
             } else {
               if (j.parent) rows.push({ label: "..", go: j.parent });
+              // 分隔符跟随当前路径：POSIX 用 /，Windows 用 \
+              const sep = cur.startsWith("/") ? "/" : "\\";
               (j.entries || []).filter((e) => e.dir).forEach((e) => {
                 const base = cur.replace(/[\\/]+$/, "");
-                rows.push({ label: e.name + "\\", go: base + "\\" + e.name });
+                rows.push({ label: e.name + sep, go: base + sep + e.name });
               });
             }
             if (!rows.length) { list.innerHTML = '<div class="pick-empty">（没有子文件夹）</div>'; return; }
