@@ -45,7 +45,8 @@ CONF = Path(os.environ.get("LLAMA_PANEL_CONF", str(ROOT / "scripts" / "llama.con
 SCRIPTS = ROOT / "scripts"
 LOGS = ROOT / "logs"
 PID_FILE = LOGS / "llama-server.pid"
-LAUNCHER = SCRIPTS / "start-llama.ps1"
+IS_WIN = os.name == "nt"
+LAUNCHER = SCRIPTS / ("start-llama.ps1" if IS_WIN else "start-llama.sh")
 PANEL_DIR = Path(__file__).resolve().parent
 UI_FILE = PANEL_DIR / "ui.html"
 BACKUP_DIR = PANEL_DIR / "backups"
@@ -128,7 +129,7 @@ def vendor_file(rel: str) -> Path:
 def skin_file(rel: str) -> Path:
     """皮肤资源只允许落在 web/skins 下。"""
     base = SKIN_DIR.resolve()
-    target = (base / rel.replace("/", "\\")).resolve()
+    target = (base / rel.replace("/", os.sep)).resolve()
     if not str(target).lower().startswith(str(base).lower()):
         raise PermissionError("皮肤路径越界")
     return target
@@ -138,10 +139,27 @@ def fs_list(path_value: str) -> dict:
     """只读列目录：工作区选路径、把目录清单塞进上下文都走这里。"""
     if not path_value:
         roots = []
-        try:
-            roots = [d + "\\" for d in os.listdrives()]
-        except AttributeError:
-            roots = [f"{c}:\\" for c in "CDEFGH" if os.path.exists(f"{c}:\\")]
+        if IS_WIN:
+            try:
+                roots = [d + "\\" for d in os.listdrives()]
+            except AttributeError:
+                roots = [f"{c}:\\" for c in "CDEFGH" if os.path.exists(f"{c}:\\")]
+        else:
+            roots = ["/"]
+            try:
+                for line in Path("/proc/mounts").read_text().splitlines():
+                    parts = line.split()
+                    if len(parts) < 3:
+                        continue
+                    mp = parts[1]
+                    if parts[2] in ("ext4", "btrfs", "xfs", "ntfs3", "vfat", "zfs", "fuseblk") \
+                       and mp not in roots and not mp.startswith(("/proc", "/sys", "/dev", "/run")):
+                        roots.append(mp)
+            except Exception:
+                pass
+            home = str(Path.home())
+            if home not in roots:
+                roots.append(home)
         return {"path": "", "parent": "", "roots": roots, "entries": []}
 
     raw = str(path_value or "").strip()
@@ -269,8 +287,16 @@ def http_json(url: str, timeout: float = 2.0, payload=None):
         return json.loads(resp.read().decode("utf-8", "replace"))
 
 def pid_alive(pid: int) -> bool:
-    if os.name != "nt" or not pid:
+    if not pid:
         return False
+    if not IS_WIN:
+        try:
+            os.kill(int(pid), 0)
+            return True
+        except OSError:
+            return False
+        except Exception:
+            return False
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     STILL_ACTIVE = 259
     handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
@@ -282,6 +308,14 @@ def pid_alive(pid: int) -> bool:
         return bool(ok) and code.value == STILL_ACTIVE
     finally:
         ctypes.windll.kernel32.CloseHandle(handle)
+
+def launcher_cmd(args) -> list:
+    """跨平台调用启动脚本：Windows 走 PowerShell，Linux 走 bash。"""
+    if IS_WIN:
+        return ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-File", str(LAUNCHER), *args]
+    return ["bash", str(LAUNCHER), *args]
+
 
 def tail_text(path: Path, max_bytes: int = 262144) -> str:
     try:
@@ -455,9 +489,27 @@ def loaded_model(port: int):
 def memory_info(pid: int = 0):
     """系统内存占用（GB）+ llama-server 进程工作集，用于面板的内存条。"""
     info = {"total_gb": 0.0, "used_gb": 0.0, "percent": 0, "proc_gb": 0.0}
-    if os.name != "nt":
-        return info
     gb = 1024.0 ** 3
+    if not IS_WIN:
+        try:
+            vals = {}
+            for line in Path("/proc/meminfo").read_text().splitlines():
+                k, _, rest = line.partition(":")
+                vals[k.strip()] = int(rest.strip().split()[0]) * 1024
+            total = vals.get("MemTotal", 0)
+            avail = vals.get("MemAvailable", vals.get("MemFree", 0))
+            if total:
+                info["total_gb"] = round(total / gb, 1)
+                info["used_gb"] = round((total - avail) / gb, 1)
+                info["percent"] = int(round((total - avail) * 100.0 / total))
+            if pid:
+                for line in Path(f"/proc/{int(pid)}/status").read_text().splitlines():
+                    if line.startswith("VmRSS:"):
+                        info["proc_gb"] = round(int(line.split()[1]) * 1024 / gb, 1)
+                        break
+        except Exception:
+            pass
+        return info
     try:
         class MEMORYSTATUSEX(ctypes.Structure):
             _fields_ = [
@@ -535,6 +587,11 @@ def keepalive_state(force: bool = False) -> dict:
     now = time.time()
     if not force and _KA_CACHE["data"] is not None and (now - _KA_CACHE["at"]) < KA_TTL:
         return _KA_CACHE["data"]
+    if not IS_WIN:
+        data = keepalive_state_linux()
+        _KA_CACHE["at"] = now
+        _KA_CACHE["data"] = data
+        return data
 
     script = r"""
 $ErrorActionPreference = 'SilentlyContinue'
@@ -571,7 +628,34 @@ if ($i.NextRunTime -and $i.NextRunTime.Year -gt 2000) { $next = $i.NextRunTime.T
     _KA_CACHE["data"] = data
     return data
 
+def keepalive_state_linux() -> dict:
+    try:
+        en = subprocess.run(["systemctl", "is-enabled", "llama-server"],
+                            capture_output=True, timeout=8)
+        ac = subprocess.run(["systemctl", "is-active", "llama-server"],
+                            capture_output=True, timeout=8)
+        return {
+            "exists": True,
+            "enabled": decode_bytes(en.stdout).strip() == "enabled",
+            "state": decode_bytes(ac.stdout).strip() or "unknown",
+            "lastRun": "", "nextRun": "", "lastResult": 0,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"exists": False, "enabled": False, "error": str(exc)}
+
+
 def set_keepalive(enabled: bool) -> dict:
+    if not IS_WIN:
+        # 服务是系统级 systemd 单元（/etc/systemd/system），普通用户改不了，
+        # 也不该由面板去改，这里只回报只读状态，界面上把开关置灰。
+        st = keepalive_state_linux()
+        return {
+            "exists": True,
+            "enabled": bool(st.get("enabled")),
+            "readonly": True,
+            "note": "Linux 下由 systemd 管理：sudo systemctl enable/disable llama-server",
+        }
+
     action = "/ENABLE" if enabled else "/DISABLE"
     ok = False
     output = ""
@@ -590,6 +674,7 @@ def set_keepalive(enabled: bool) -> dict:
         ok = False
         output = (output + "\n任务状态未按预期变化").strip()
     return {"ok": ok, "output": output, "state": state}
+
 
 def last_eval():
     text = tail_text(LOGS / "llama-server.err.log")
@@ -1098,10 +1183,7 @@ class JobRunner:
                 del self.output[:100]
 
     def _run(self, args: list[str]) -> None:
-        command = [
-            "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
-            "-File", str(LAUNCHER), *args,
-        ]
+        command = launcher_cmd(args)
         # 输出重定向到文件而不是管道：llama-server 是 Start-Process 拉起的
         # 孙进程，会继承 stdout 句柄，用 PIPE 时父进程退出后 read() 永远等不到
         # EOF（实测任务卡死 3 分钟以上）。文件轮询没有这个继承问题。
@@ -1192,10 +1274,7 @@ class JobRunner:
 JOB = JobRunner()
 
 def run_script_blocking(args: list[str], timeout: int = 90):
-    command = [
-        "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
-        "-File", str(LAUNCHER), *args,
-    ]
+    command = launcher_cmd(args)
     try:
         done = subprocess.run(
             command, cwd=str(SCRIPTS), capture_output=True,
@@ -1344,6 +1423,13 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             if path == "/api/open-app":
+                if not IS_WIN:
+                    url = f"http://127.0.0.1:{PORT}/chat"
+                    try:
+                        subprocess.Popen(["xdg-open", url], close_fds=True)
+                    except Exception as exc:  # noqa: BLE001
+                        return self._error(f"打开浏览器失败：{exc}", 500)
+                    return self._json({"ok": True, "started": True, "file": url})
                 exe = str(APP_EXE)
                 if not APP_EXE.exists():
                     return self._error("找不到 chat-app\\llama-chat.exe", 500)
@@ -1374,9 +1460,12 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:  # noqa: BLE001
                     return self._error("只允许打开工作区内的文件", 403)
                 try:
-                    subprocess.Popen(["explorer.exe", "/select," + str(target)], close_fds=True)
+                    if IS_WIN:
+                        subprocess.Popen(["explorer.exe", "/select," + str(target)], close_fds=True)
+                    else:
+                        subprocess.Popen(["xdg-open", str(target.parent)], close_fds=True)
                 except Exception as exc:  # noqa: BLE001
-                    return self._error(f"打开资源管理器失败：{exc}", 500)
+                    return self._error(f"打开文件管理器失败：{exc}", 500)
                 log(f"reveal {target}")
                 return self._json({"ok": True, "path": str(target)})
             if path == "/api/models/scan":

@@ -1052,8 +1052,9 @@
     const kaKnown = ka.exists === true || ka.exists === false;
     const kaBox = $("#keepalive");
     kaBox.checked = ka.enabled === true;
-    kaBox.disabled = !kaKnown || ka.exists === false;
-    $("#fKeepalive").textContent = ka.exists === false ? "未注册" : !kaKnown ? "无法查询" : (ka.enabled ? "已启用" : "已关闭");
+    kaBox.disabled = !kaKnown || ka.exists === false || ka.readonly === true;
+    $("#fKeepalive").textContent = ka.readonly ? (ka.enabled ? "systemd 已启用" : "systemd 未启用")
+      : ka.exists === false ? "未注册" : !kaKnown ? "无法查询" : (ka.enabled ? "已启用" : "已关闭");
     $("#fNextRun").textContent = (kaKnown && ka.exists && ka.nextRun) ? ka.nextRun : "—";
     $("#kaWrap").title = ka.exists === false
       ? "计划任务 llama-keepalive 未注册"
