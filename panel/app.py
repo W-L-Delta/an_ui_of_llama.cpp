@@ -600,6 +600,56 @@ def last_eval():
         result["prompt_tokens"] = int(prompt[-1][1])
     return result
 
+def quant_of(name: str) -> str:
+    """从文件名里猜量化格式，例如 Q4_K_M / Q5_K_S / IQ4_XS / F16。"""
+    m = re.search(r"(IQ\d[A-Z_]*|Q\d[_A-Z0-9]*|F16|F32|BF16)", name, re.I)
+    return m.group(1).upper() if m else ""
+
+
+def scan_models(values: dict) -> dict:
+    """扫描 models/ 目录（含子目录），列出所有 gguf 及它们是否已配置。"""
+    models_dir = ROOT / "models"
+    configured = {}
+    for role, info in build_models(values).items():
+        if info.get("path"):
+            configured[str(Path(info["path"]).resolve()).lower()] = role
+        # 投影只认「明确配置在本模型段里」的，避免 [model] mmproj 的默认值被所有角色认领
+        mm_rel = ""
+        if role == "base":
+            mm_rel = cfg_get(values, "model", "mmproj", "")
+        else:
+            mm_rel = cfg_get(values, "gpu" if role == "base" else role, "mmproj", "")
+        if mm_rel:
+            try:
+                configured[str(resolve_path(mm_rel).resolve()).lower()] = role + ":mmproj"
+            except Exception:  # noqa: BLE001
+                pass
+    files = []
+    if models_dir.is_dir():
+        for item in sorted(models_dir.rglob("*.gguf"), key=lambda x: str(x).lower()):
+            try:
+                rel = str(item.relative_to(ROOT)).replace("\\", "/")
+            except ValueError:
+                rel = item.name
+            low = item.name.lower()
+            is_mm = ("mmproj" in low) or ("projector" in low) or (".mmproj." in low)
+            files.append({
+                "name": item.name,
+                "rel": rel,
+                "size": image_size(item),
+                "mmproj": is_mm,
+                "quant": quant_of(item.name),
+                "family": "deepseek" if "deepseek" in low else ("qwen" if "qwen" in low else "other"),
+                "configured_as": configured.get(str(item.resolve()).lower(), ""),
+                "role_label": ROLE_LABEL.get(configured.get(str(item.resolve()).lower(), "").split(":")[0], ""),
+            })
+    return {
+        "root": str(models_dir),
+        "files": files,
+        "slots": [{"role": r, "label": l} for r, l, _ in ROLES],
+    }
+
+
 def build_models(values: dict) -> dict:
     gpu_defaults = {
         "ngl": as_int(cfg_get(values, "gpu", "n_gpu_layers", "99"), 99),
@@ -1195,6 +1245,8 @@ class Handler(BaseHTTPRequestHandler):
                 if data is None:
                     return self._json({"exists": False, "data": None, "file": str(SESS_FILE)})
                 return self._json({"exists": True, "data": data, "file": str(SESS_FILE)})
+            if path == "/api/models/scan":
+                return self._json(scan_models(parse_conf()))
             if path == "/api/skins":
                 target = SKIN_DIR / "skins.json"
                 if not target.exists():
@@ -1289,6 +1341,35 @@ class Handler(BaseHTTPRequestHandler):
                     return self._error(f"打开资源管理器失败：{exc}", 500)
                 log(f"reveal {target}")
                 return self._json({"ok": True, "path": str(target)})
+            if path == "/api/models/scan":
+                return self._json(scan_models(parse_conf()))
+            if path == "/api/models/assign":
+                role = str(payload.get("role") or "").strip().lower()
+                rel = str(payload.get("rel") or "").strip()
+                mm_rel = str(payload.get("mmproj") or "").strip()
+                if role not in ROLE_FILE_KEY:
+                    return self._error(f"未知模型槽位：{role}", 400)
+                if not rel and not mm_rel:
+                    return self._error("缺少文件", 400)
+                updates = {}
+                if rel:
+                    target = resolve_path(rel)
+                    if not target.exists() or target.suffix.lower() != ".gguf":
+                        return self._error("文件不存在或不是 .gguf：" + rel, 400)
+                    if "mmproj" in target.name.lower() or "projector" in target.name.lower():
+                        return self._error("这是视觉投影文件，不能当主模型", 400)
+                    updates["model"] = {ROLE_FILE_KEY[role]: rel.replace("/", "\\")}
+                if mm_rel:
+                    mm_target = resolve_path(mm_rel)
+                    if not mm_target.exists():
+                        return self._error("投影文件不存在：" + mm_rel, 400)
+                    section = "gpu" if role == "base" else role
+                    updates[section] = dict(updates.get(section) or {})
+                    updates[section]["mmproj"] = mm_rel.replace("/", "\\")
+                backup_conf()
+                update_conf(updates)
+                log(f"model assigned: {role} <- {rel}")
+                return self._json({"ok": True, "scan": scan_models(parse_conf())})
             if path == "/api/router/load":
                 values = parse_conf()
                 port = server_port(values)
