@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import base64
 import json
 import os
 import re
@@ -133,6 +134,46 @@ def skin_file(rel: str) -> Path:
     if not str(target).lower().startswith(str(base).lower()):
         raise PermissionError("皮肤路径越界")
     return target
+
+
+ATTACH_MAX = 12 * 1024 * 1024   # 12 MB
+CAPTURE_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                ".webp": "image/webp", ".gif": "image/gif", ".bmp": "image/bmp"}
+
+
+def fs_attach(path_value: str) -> dict:
+    """把磁盘上的图片读成 data URL。
+
+    浏览器出于安全不允许 JS 读 file://，而独立窗口里用户常直接粘贴一个本地路径，
+    所以由面板代读（只允许图片，且限制在家目录/工作区内）。
+    """
+    raw = str(path_value or "").strip()
+    if raw.startswith("file://"):
+        raw = raw[len("file://"):]
+    raw = urllib.parse.unquote(raw)
+    p = Path(raw).expanduser()
+    if not p.is_absolute():
+        raise ValueError("必须是绝对路径")
+    if not p.is_file():
+        raise FileNotFoundError(f"文件不存在: {p}")
+    if p.stat().st_size > ATTACH_MAX:
+        raise ValueError(f"图片太大（上限 {ATTACH_MAX // (1024 * 1024)} MB）")
+    mime = CAPTURE_MIME.get(p.suffix.lower(), "")
+    if not mime:
+        raise ValueError("不是支持的图片格式（png/jpg/webp/gif/bmp）")
+    allowed = [Path.home().resolve()]
+    try:
+        ws = tools_state().get("workspace")
+        if ws:
+            allowed.append(Path(ws).resolve())
+    except Exception:  # noqa: BLE001
+        pass
+    rp = p.resolve()
+    if not any(str(rp).startswith(str(a)) for a in allowed):
+        raise PermissionError(f"只允许读取家目录或工作区内的图片: {rp}")
+    data = base64.b64encode(rp.read_bytes()).decode("ascii")
+    return {"name": rp.name, "mime": mime, "size": rp.stat().st_size,
+            "url": f"data:{mime};base64,{data}"}
 
 
 def fs_list(path_value: str) -> dict:
@@ -1413,6 +1454,11 @@ class Handler(BaseHTTPRequestHandler):
                 text = tail_text(target)
                 tail = text.splitlines()[-lines:]
                 return self._json({"file": str(target), "exists": target.exists(), "lines": tail})
+            if path == "/api/fs/attach":
+                try:
+                    return self._json(fs_attach(str((query.get("path") or [""])[0])))
+                except (ValueError, FileNotFoundError, PermissionError) as exc:
+                    return self._error(str(exc), 400)
             if path == "/api/sessions":
                 data = load_sessions()
                 if data is None:
