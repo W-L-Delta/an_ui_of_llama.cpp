@@ -589,6 +589,9 @@ def keepalive_state(force: bool = False) -> dict:
         return _KA_CACHE["data"]
     if not IS_WIN:
         data = keepalive_state_linux()
+        # Linux 下服务是系统级 systemd 单元，面板无权切换，界面据此置灰
+        data["readonly"] = True
+        data.setdefault("note", "Linux 下由 systemd 管理：sudo systemctl enable/disable llama-server")
         _KA_CACHE["at"] = now
         _KA_CACHE["data"] = data
         return data
@@ -1135,6 +1138,7 @@ def build_state() -> dict:
         "active": active,
         "models": models,
         "other_files": others,
+        "platform": "win" if IS_WIN else "linux",
         "settings": {
             "threads": as_int(cfg_get(values, "server", "threads", "8"), 8),
             "parallel": as_int(cfg_get(values, "server", "parallel", "1"), 1),
