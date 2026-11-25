@@ -2540,8 +2540,10 @@ function syncSkinCfg() {
 
   $("btnOpenConsole").addEventListener("click", () => {
     const wv = window.chrome && window.chrome.webview;
-    if (wv) wv.postMessage(JSON.stringify({ type: "open-console" }));
-    else toast("控制台只能在程序内打开");
+    if (wv) { wv.postMessage(JSON.stringify({ type: "open-console" })); return; }
+    // 非 WebView2 环境（Linux 独立窗口 / 普通浏览器）：直接跳到控制台页面
+    try { window.open("/", "_blank"); } catch (e) {}
+    if (!window.__consoleOpened) location.href = "/";
   });
   $("sAccent").addEventListener("input", () => {
     accentCustom = true;

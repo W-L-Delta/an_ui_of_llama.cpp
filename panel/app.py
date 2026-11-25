@@ -144,13 +144,16 @@ def fs_list(path_value: str) -> dict:
             roots = [f"{c}:\\" for c in "CDEFGH" if os.path.exists(f"{c}:\\")]
         return {"path": "", "parent": "", "roots": roots, "entries": []}
 
-    p = Path(path_value)
+    raw = str(path_value or "").strip()
+    p = Path(raw).expanduser() if raw else Path.home()
     if not p.is_absolute():
         raise ValueError("必须是绝对路径")
-    if not p.exists():
-        raise FileNotFoundError(f"路径不存在: {p}")
-    if not p.is_dir():
-        raise NotADirectoryError(f"不是文件夹: {p}")
+    fell_back = False
+    if not p.exists() or not p.is_dir():
+        # 常见情况：配置里还留着 Windows 路径（D:\...）或已被删除
+        # 与其报错，不如回到 home，让用户自己点进去选
+        fell_back = True
+        p = Path.home()
 
     entries = []
     try:
@@ -172,7 +175,15 @@ def fs_list(path_value: str) -> dict:
 
     entries.sort(key=lambda x: (not x["dir"], x["name"].lower()))
     parent = str(p.parent) if p.parent != p else ""
-    return {"path": str(p), "parent": parent, "roots": [], "entries": entries}
+    return {
+        "path": str(p),
+        "parent": parent,
+        "roots": [],
+        "entries": entries,
+        # 请求的路径不可用时回落到 home，前端可以据此提示用户
+        "fell_back": fell_back,
+        "requested": raw,
+    }
 
 ROLES = [
     ("base", "Qwen3.5 9B", "-Base"),
@@ -925,8 +936,14 @@ def apply_tool_config(payload: dict) -> dict:
     ws = str(payload.get("workspace") or "").strip()
     if ws:
         target = Path(ws).expanduser()
+        if not target.is_absolute():
+            raise ValueError(f"工作区必须是绝对路径：{ws}")
         if not target.is_dir():
-            raise ValueError(f"工作区目录不存在：{ws}")
+            # 工作区本来就是「用来放文件的目录」，不存在就建出来，别为难用户
+            try:
+                target.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise ValueError(f"无法创建工作区目录 {target}：{exc}") from exc
         updates["tools"]["workspace"] = str(target)
     update_conf(updates)
     return tools_state()
