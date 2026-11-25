@@ -57,6 +57,21 @@ for line in src.read_text(encoding="utf-8-sig").splitlines():
     if m and not line.lstrip().startswith(("#", ";")):
         key, val = m.group(2), m.group(3)
         if "\\" in val or val.startswith("models/"):
+            norm_abs = val.replace("\\", "/")
+            if len(norm_abs) > 2 and norm_abs[1] == ":":
+                # 绝对 Windows 路径：D:\xxx -> 映射到 Linux
+                if "工作区" in norm_abs:
+                    new = str(pathlib.Path.home() / "llama-work")
+                elif norm_abs.lower().startswith("d:/llama.cpp"):
+                    new = str(pathlib.Path.home() / "WinD" / norm_abs[3:])
+                elif "/models/" in norm_abs.lower():
+                    new = win_models + "/" + norm_abs.split("/models/", 1)[1]
+                else:
+                    new = str(pathlib.Path.home() / "llama-work")
+                line = f"{m.group(1)}{key} = {new}"
+                changed += 1
+                lines.append(line)
+                continue
             if val.replace("\\", "/").startswith("models/"):
                 new = win_models + "/" + val.replace("\\", "/")[len("models/"):]
             elif val.replace("\\", "/").startswith("scripts/"):
