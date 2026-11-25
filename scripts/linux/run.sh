@@ -4,13 +4,29 @@
 #
 #      bash /home/w-l-delta/WinD/llama.cpp/scripts/linux/run.sh
 #
-#  AI 每次只改下面「当前步骤」这一行，你不用重新复制命令。
-#  输出会写到共享盘的 step-report.txt，AI 回到 Windows 直接读。
+#  AI 只改下面「当前步骤」那一行，你不用重新复制命令。
+#  输出写到共享盘 step-report.txt，AI 回到 Windows 直接读。
 # ============================================================
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
-SHARE="$(cd "$HERE/../../.." && pwd)"      # <挂载点>/llama.cpp/scripts/linux -> <挂载点>
+SHARE="$(cd "$HERE/../../.." && pwd)"
 OUT="$SHARE/step-report.txt"
+
+# ---- 自愈：这些脚本在 Windows 上生成，可能带 CRLF，bash 会直接报语法错 ----
+fix_crlf() {
+  local f="$1"
+  [ -f "$f" ] || return 0
+  if grep -q $'\r' "$f" 2>/dev/null; then
+    local tmp="$f.crlf.$$"
+    if sed 's/\r$//' "$f" > "$tmp" 2>/dev/null && mv -f "$tmp" "$f"; then
+      echo "  （已修正 CRLF 换行：$(basename "$f")）"
+    else
+      rm -f "$tmp"
+      echo "  （警告：$(basename "$f") 含 CRLF 但修正失败）"
+    fi
+  fi
+}
+for f in "$HERE"/*.sh; do fix_crlf "$f"; done
 
 echo "工作目录: $HERE"
 echo "共享盘  : $SHARE"
