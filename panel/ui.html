@@ -1048,6 +1048,11 @@
       $("#ramProc").textContent = m.proc_gb ? `llama-server 工作集 ${m.proc_gb} GB` : "";
     }
 
+    // Linux 版：面板由 systemd 守护，不要让用户从页面里关掉
+    if (d.platform === "linux") {
+      const q = $("#btnQuit");
+      if (q) q.style.display = "none";
+    }
     const ka = d.keepalive || {};
     const kaKnown = ka.exists === true || ka.exists === false;
     const kaBox = $("#keepalive");

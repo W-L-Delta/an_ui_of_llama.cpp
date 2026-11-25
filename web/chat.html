@@ -2253,8 +2253,22 @@ function syncSkinCfg() {
   });
 
   $("input").addEventListener("paste", async (e) => {
-    const items = Array.from((e.clipboardData || {}).items || []);
-    const files = items.filter((i) => i.kind === "file" && i.type.startsWith("image/")).map((i) => i.getAsFile());
+    const cd = e.clipboardData || {};
+    let files = Array.from(cd.items || [])
+      .filter((i) => i.kind === "file" && (i.type || "").startsWith("image/"))
+      .map((i) => i.getAsFile())
+      .filter(Boolean);
+    // GTK/WebKit 里粘贴图片时 items 可能为空，改从 files 取
+    if (!files.length && cd.files && cd.files.length) {
+      files = Array.from(cd.files).filter((f) => (f.type || "").startsWith("image/"));
+    }
+    // 有些平台只给 text/uri-list（file://…），当作图片文件读进来
+    if (!files.length) {
+      const uri = (cd.getData && cd.getData("text/uri-list")) || "";
+      if (/^file:\/\//.test(uri.trim())) {
+        toast("该平台不允许直接读取文件，请用「＋」按钮选择图片");
+      }
+    }
     if (files.length) { e.preventDefault(); await addFiles(files); return; }
     const text = (e.clipboardData && e.clipboardData.getData) ? e.clipboardData.getData("text") : "";
     if (text && looksLikeCode(text)) {
@@ -2262,12 +2276,22 @@ function syncSkinCfg() {
       insertAtCursor(fence(text));
     }
   });
-  $("chatScroll").addEventListener("dragover", (e) => { e.preventDefault(); });
-  $("chatScroll").addEventListener("drop", async (e) => {
-    if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
-    e.preventDefault();
-    await addFiles(e.dataTransfer.files);
+  // 拖放：整个窗口都接受，避免 WebKit 把图片当成链接直接打开
+  function hasFiles(dt) {
+    if (!dt) return false;
+    if (dt.files && dt.files.length) return true;
+    const types = dt.types ? Array.from(dt.types) : [];
+    return types.indexOf("Files") >= 0;
+  }
+  ["dragenter", "dragover"].forEach((ev) => {
+    document.addEventListener(ev, (e) => { if (hasFiles(e.dataTransfer)) e.preventDefault(); }, true);
   });
+  document.addEventListener("drop", async (e) => {
+    if (!hasFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer.files && e.dataTransfer.files.length) await addFiles(e.dataTransfer.files);
+  }, true);
   $("btnSend").addEventListener("click", trySend);
   $("btnStop").addEventListener("click", stopStream);
   $("input").addEventListener("keydown", (e) => {

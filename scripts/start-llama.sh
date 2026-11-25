@@ -95,6 +95,19 @@ find_server() {
   return 1
 }
 
+# ------------------------------------------------------------ 模型路径容错
+# 配置里可能留着 Windows 相对路径（models\xxx.gguf）或过期绝对路径。
+# 依次尝试：原样 / 反斜杠转正斜杠 / ROOT 相对 / Windows 盘挂载点 / 按文件名找
+resolve_model() {
+  local m="$1" n c
+  n="${m//\\//}"
+  for c in "$m" "$n" "$ROOT/$n" "$HOME/WinD/llama.cpp/$n" \
+           "$HOME/WinD/llama.cpp/models/$(basename "$n")" "$ROOT/models/$(basename "$n")"; do
+    [ -f "$c" ] && { printf '%s' "$c"; return 0; }
+  done
+  return 1
+}
+
 # ------------------------------------------------------------ 参数拼装
 build_args() {
   local role section model alias
@@ -107,11 +120,12 @@ build_args() {
   esac
 
   [ -n "$model" ] || die "配置里 [model] 没写模型文件（当前角色 $role）"
-  case "$model" in
-    /*) : ;;
-    *)  model="$ROOT/$model" ;;
-  esac
-  [ -f "$model" ] || die "模型文件不存在：$model"
+  local raw_model="$model"
+  model="$(resolve_model "$raw_model")" || {
+    warn "找不到模型文件：$raw_model"
+    warn "试过：$ROOT/${raw_model//\\//}、$HOME/WinD/llama.cpp/${raw_model//\\//}"
+    die "模型文件不存在（当前角色 $role）"
+  }
 
   local host port threads parallel ngl ctx ctk ctv fa reason mmproj
   host="$(gv server host 127.0.0.1)"
