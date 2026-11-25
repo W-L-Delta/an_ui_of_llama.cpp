@@ -122,11 +122,27 @@ def main():
             def on_fail(_view, _evt, uri, error):
                 log("加载失败 %s: %s" % (uri, getattr(error, "message", error)))
 
+            def on_decide(view, decision, decision_type):
+                """兜底：页面里任何 file:// 导航一律拒绝，避免拖入图片把窗口带跑"""
+                try:
+                    if decision_type != WebKit.PolicyDecisionType.NAVIGATION_ACTION:
+                        return False
+                    action = decision.get_navigation_action()
+                    uri = action.get_request().get_uri() if action else ""
+                    if uri.startswith("file://") or uri.startswith("file:"):
+                        log("拦截 file:// 导航: " + uri)
+                        decision.ignore()
+                        return True
+                except Exception as exc:
+                    log("decide-policy 异常: %r" % (exc,))
+                return False
+
             try:
                 v.connect("create", on_create)
                 v.connect("load-failed", on_fail)
-            except Exception:
-                pass
+                v.connect("decide-policy", on_decide)
+            except Exception as e:
+                log("挂载信号失败: %r" % (e,))
             return v
 
         chat = make_view()
