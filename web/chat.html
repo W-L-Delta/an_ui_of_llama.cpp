@@ -2292,8 +2292,20 @@ function syncSkinCfg() {
     }
     // 有些平台只给 file:// 路径（在文件管理器里复制文件就属于这种）
     if (!files.length) {
-      const uri = (cd.getData && (cd.getData("text/uri-list") || cd.getData("text/plain"))) || "";
-      const path = localImagePath(uri);
+      const raw = (cd.getData && (cd.getData("text/uri-list") || cd.getData("text/plain"))) || "";
+      let path = localImagePath(raw);
+      // 粘贴的是一整段话里夹着图片路径（很常见：先写问题，再粘路径）
+      if (!path) {
+        const m = /((?:\/[\w\u4e00-\u9fff .()\-]+)+\.(?:png|jpe?g|webp|gif|bmp))/i.exec(raw);
+        if (m) {
+          path = m[1];
+          const rest = raw.replace(m[1], "").trim();
+          e.preventDefault();
+          if (rest) insertAtCursor(rest);
+          await attachFromPath(path);
+          return;
+        }
+      }
       if (path) {
         e.preventDefault();
         await attachFromPath(path);
