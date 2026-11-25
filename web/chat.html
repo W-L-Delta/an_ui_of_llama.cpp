@@ -1470,6 +1470,16 @@ function syncSkinCfg() {
 
   const TEXT_EXT = /\.(txt|md|markdown|json|jsonl|csv|tsv|log|ini|conf|cfg|yaml|yml|toml|xml|html|css|js|ts|jsx|tsx|py|ps1|sh|bat|cmd|c|h|cpp|hpp|java|go|rs|sql|properties)$/i;
 
+  // 调试上报：把粘贴/拖放时浏览器给的数据写到面板日志，便于定位
+  function uiLog(msg) {
+    try {
+      fetch("/api/debug/log", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ msg: String(msg) }),
+      }).catch(() => {});
+    } catch (e) {}
+  }
+
   // 从 file:// URI 或纯路径里取出本地图片路径
   function localImagePath(raw) {
     let t = String(raw || "").trim();
@@ -2282,6 +2292,13 @@ function syncSkinCfg() {
 
   $("input").addEventListener("paste", async (e) => {
     const cd = e.clipboardData || {};
+    try {
+      const types = cd.types ? Array.from(cd.types) : [];
+      uiLog("paste types=" + JSON.stringify(types) +
+            " files=" + (cd.files ? cd.files.length : 0) +
+            " uri=" + JSON.stringify((cd.getData && (cd.getData("text/uri-list") || "")) || "").slice(0, 120) +
+            " text=" + JSON.stringify(((cd.getData && cd.getData("text")) || "").slice(0, 120)));
+    } catch (err) {}
     let files = Array.from(cd.items || [])
       .filter((i) => i.kind === "file" && (i.type || "").startsWith("image/"))
       .map((i) => i.getAsFile())
@@ -2336,6 +2353,12 @@ function syncSkinCfg() {
   document.addEventListener("drop", async (e) => {
     const dt = e.dataTransfer;
     if (!dt) return;
+    try {
+      const types = dt.types ? Array.from(dt.types) : [];
+      uiLog("drop types=" + JSON.stringify(types) +
+            " files=" + (dt.files ? dt.files.length : 0) +
+            " uri=" + JSON.stringify((dt.getData && (dt.getData("text/uri-list") || "")) || "").slice(0, 120));
+    } catch (err) {}
     if (dt.files && dt.files.length) {
       e.preventDefault();
       e.stopPropagation();
