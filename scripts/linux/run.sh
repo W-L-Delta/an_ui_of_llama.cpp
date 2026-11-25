@@ -4,25 +4,25 @@
 #
 #      bash /home/w-l-delta/WinD/llama.cpp/scripts/linux/run.sh
 #
-#  AI 每次只会改这个文件里「当前步骤」那一段，
-#  所以你不用重新复制命令，直接重跑这一条即可。
+#  AI 每次只改下面「当前步骤」这一行，你不用重新复制命令。
+#  输出会写到共享盘的 step-report.txt，AI 回到 Windows 直接读。
 # ============================================================
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
-# <挂载点>/llama.cpp/scripts/linux -> <挂载点>
-SHARE="$(cd "$HERE/../../.." && pwd)"
-STAMP="$(date +%Y%m%d-%H%M%S)"
+SHARE="$(cd "$HERE/../../.." && pwd)"      # <挂载点>/llama.cpp/scripts/linux -> <挂载点>
+OUT="$SHARE/step-report.txt"
 
 echo "工作目录: $HERE"
 echo "共享盘  : $SHARE"
+echo "报告文件: $OUT"
 echo
 
-# ---------------- 当前步骤 ----------------
-STEP="01-gpu-check.sh"
-echo ">>> 正在执行: $STEP"
-bash "$HERE/$STEP" 2>&1 | tee "$SHARE/gpu-report.txt"
-# ------------------------------------------
+# ---------------- 当前步骤（AI 会改这一行） ----------------
+STEP="02-fix-driver.sh"
+# ----------------------------------------------------------
+
+echo ">>> 执行: $STEP"
+bash "$HERE/$STEP" 2>&1 | tee "$OUT"
 
 echo
-echo "报告已写入: $SHARE/gpu-report.txt"
-echo "回到 Windows 后，这个文件就在 D:\\gpu-report.txt"
+echo "报告已写入: $OUT   （Windows 里就是 D:\\step-report.txt）"
