@@ -270,6 +270,17 @@
   }
   #toast.show { opacity: 1; transform: translateY(0); }
   #toast.err { border-left-color: var(--red); }
+  .scan-row{display:flex;align-items:center;gap:10px;padding:7px 10px;border:1px solid var(--line);
+    border-radius:8px;margin-bottom:6px;font-size:12px;background:#101720}
+  .scan-row .nm{font-family:ui-monospace,Consolas,monospace;flex:1;min-width:0;overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap}
+  .scan-row .sz{color:var(--dim);font-size:11px;flex:0 0 auto}
+  .scan-row select{background:#141b24;color:var(--text);border:1px solid var(--line);border-radius:6px;
+    padding:2px 6px;font-size:11px}
+  .scan-row button{padding:2px 9px;font-size:11px}
+  .scan-tag{font-size:10.5px;border-radius:999px;padding:1px 7px;border:1px solid var(--line);color:var(--dim)}
+  .scan-tag.ok{color:var(--green);border-color:rgba(63,185,80,.4)}
+  .scan-tag.mm{color:#8ab4ff;border-color:rgba(76,141,255,.4)}
   .banner {
     margin-bottom: 14px; padding: 9px 12px; border-radius: 10px; font-size: 12px;
     background: rgba(240,182,75,.08); border: 1px solid rgba(240,182,75,.28); color: #e8c382;
@@ -315,6 +326,11 @@
       <span class="hint" id="cardHint">同一时刻只能常驻一个模型</span>
     </div>
     <div class="models" id="modelList"></div>
+    <div style="display:flex;align-items:center;gap:10px;margin-top:12px">
+      <button class="btn ghost" id="btnScan" type="button">扫描 models\ 目录</button>
+      <span class="hint" id="scanHint">找出目录里还没配置的 gguf，可一键填到槽位</span>
+    </div>
+    <div id="scanBox" style="display:none;margin-top:10px"></div>
   </section>
 
   <!-- 多模型 -->
@@ -1099,6 +1115,85 @@
       };
     });
   }
+
+  // ---------------- 扫描 models 目录 ----------------
+  let scanCache = null;
+
+  async function doScan() {
+    const box = $("#scanBox");
+    $("#scanHint").textContent = "扫描中…";
+    try {
+      const r = await fetch("/api/models/scan", { cache: "no-store" });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+      scanCache = j;
+      renderScan(j);
+      const un = (j.files || []).filter((f) => !f.configured_as).length;
+      $("#scanHint").textContent = "扫描到 " + (j.files || []).length + " 个 gguf，其中 " + un + " 个未配置";
+    } catch (e) {
+      $("#scanHint").style.color = "var(--red)";
+      $("#scanHint").textContent = "扫描失败：" + e.message;
+    }
+  }
+
+  function renderScan(j) {
+    const box = $("#scanBox");
+    const slots = (j.slots || []).map((s) => `<option value="${esc(s.role)}">${esc(s.label)}</option>`).join("");
+    const files = (j.files || []).slice().sort((a, b) => (a.configured_as ? 1 : 0) - (b.configured_as ? 1 : 0) || b.size - a.size);
+    if (!files.length) {
+      box.innerHTML = '<div class="hint">目录里没有 gguf 文件</div>';
+      box.style.display = "";
+      return;
+    }
+    box.innerHTML = files.map((f, i) => {
+      const done = !!f.configured_as;
+      const tag = f.mmproj
+        ? `<span class="scan-tag mm">投影</span>`
+        : `<span class="scan-tag">${esc(f.quant || "?")}</span>`;
+      const state = done
+        ? `<span class="scan-tag ok">已配置 → ${esc(f.role_label || f.configured_as)}</span>`
+        : `<select data-slot="${i}">${slots}</select>
+           <button class="btn" data-assign="${i}" data-kind="${f.mmproj ? "mm" : "model"}">${f.mmproj ? "设为投影" : "写入配置"}</button>`;
+      return `<div class="scan-row">
+        <span class="nm" title="${esc(f.rel)}">${esc(f.rel)}</span>
+        ${tag}
+        <span class="sz">${(f.size / 1024 ** 3).toFixed(2)} GB</span>
+        ${state}
+      </div>`;
+    }).join("");
+    box.style.display = "";
+    box.querySelectorAll("[data-assign]").forEach((btn) => {
+      btn.onclick = async () => {
+        const i = Number(btn.getAttribute("data-assign"));
+        const f = files[i];
+        const sel = box.querySelector('[data-slot="' + i + '"]');
+        const role = sel ? sel.value : "";
+        const kind = btn.getAttribute("data-kind");
+        btn.disabled = true;
+        btn.textContent = "写入中…";
+        try {
+          const body = kind === "mm"
+            ? { role, mmproj: f.rel }
+            : { role, rel: f.rel };
+          const r = await fetch("/api/models/assign", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          const jr = await r.json();
+          if (!r.ok) throw new Error(jr.error || ("HTTP " + r.status));
+          scanCache = jr.scan || scanCache;
+          renderScan(scanCache);
+          $("#scanHint").textContent = f.name + " 已写入配置，重启后生效";
+          refresh();
+        } catch (e) {
+          btn.disabled = false;
+          btn.textContent = "失败：" + e.message;
+        }
+      };
+    });
+  }
+
+  $("#btnScan").addEventListener("click", doScan);
 
   function fmtUptime(sec) {
     if (sec < 60) return sec + " 秒";
